@@ -27,8 +27,7 @@ const secret = "AbCdEf0123456789"
 // takes the directory itself, and the placeholder counters do not overlap between tests.
 func newEngine(t *testing.T) *core.Engine {
 	t.Helper()
-	t.Chdir(t.TempDir())
-	e, err := core.New(ctx, t.TempDir(), "cli")
+	e, err := core.New(ctx, t.TempDir(), t.TempDir(), "cli")
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
 	}
@@ -60,8 +59,7 @@ func newEngineWithRule(t *testing.T, spec rules.Spec) *core.Engine {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(t.TempDir())
-	e, err := core.New(ctx, home, "cli")
+	e, err := core.New(ctx, home, t.TempDir(), "cli")
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
 	}

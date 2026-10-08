@@ -5,8 +5,6 @@ package core
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
 
 	"github.com/werbot/shade/internal/crypt"
 	"github.com/werbot/shade/internal/placeholder"
@@ -40,8 +38,12 @@ type Result struct {
 	Spans []rules.Span
 }
 
-// New assembles an engine for the project that owns the current directory.
-func New(ctx context.Context, home, adapter string) (*Engine, error) {
+// New assembles an engine for the project that owns the directory dir.
+//
+// dir comes from outside rather than from os.Getwd inside: the project directory is
+// a property of the adapter. The CLI passes --project or the current directory here, the hook in
+// phase 2 — the cwd from the payload, which does not match the environment of the hook process.
+func New(ctx context.Context, home, dir, adapter string) (*Engine, error) {
 	// The directory must exist before the key is loaded: crypt.LoadOrCreateKey does not
 	// create it, and on a clean machine the first run would fail with ENOENT.
 	if err := store.EnsureHome(home); err != nil {
@@ -55,7 +57,7 @@ func New(ctx context.Context, home, adapter string) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e, err := build(ctx, s, adapter)
+	e, err := build(ctx, s, dir, adapter)
 	if err != nil {
 		// Otherwise the database connection would be left hanging: New returned an error, but
 		// the caller has no way to close the store. The close error is not lost —
@@ -68,17 +70,21 @@ func New(ctx context.Context, home, adapter string) (*Engine, error) {
 // Close releases the engine's store.
 func (e *Engine) Close() error { return e.store.Close() }
 
+// RootPath returns the engine's project root. The layers above use it to find
+// the project config: .shade.toml lies in the repository root, and not in the directory
+// from which the command was started.
+func (e *Engine) RootPath() string { return e.project.RootPath }
+
+// RuleCount returns the number of rules active in the engine's project.
+func (e *Engine) RuleCount() int { return len(e.ruleSet) }
+
 // build finishes the engine on top of an open store: it resolves the project of the
-// the current directory, seeds the builtin rule set and reads the active set.
+// directory dir, seeds the builtin rule set and reads the active set.
 //
 // The rules are read from the database, not from memory: the user edits them through
 // `shade rules`, and the engine must see the edit.
-func build(ctx context.Context, s *store.Store, adapter string) (*Engine, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("working directory: %w", err)
-	}
-	project, err := s.ProjectForPath(ctx, wd)
+func build(ctx context.Context, s *store.Store, dir, adapter string) (*Engine, error) {
+	project, err := s.ProjectForPath(ctx, dir)
 	if err != nil {
 		return nil, err
 	}
