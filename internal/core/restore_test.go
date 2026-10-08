@@ -121,6 +121,25 @@ func TestRestoreRecordsUnresolvedInAudit(t *testing.T) {
 	}
 }
 
+// A decision opposite to the statistics (TestAnonymizeSurvivesRuleHitFailure):
+// losing the trace of an unresolved token comes back as an error, but the response is
+// is not lost — the text and the list of tokens are assembled before the write. The failure is injected
+// dropping the table: Resolve works, the journal does not.
+func TestRestoreReportsAuditFailureWithResult(t *testing.T) {
+	e := newEngine(t)
+	if _, err := e.Store().DB().ExecContext(ctx, `DROP TABLE audit`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.Restore(ctx, "see <HOST_99> there")
+	if err == nil {
+		t.Fatal("losing the trace of an unresolved token must be an error")
+	}
+	if got.Text != "see <HOST_99> there" || len(got.Unresolved) != 1 ||
+		got.Unresolved[0].Type != "HOST" || got.Unresolved[0].N != 99 {
+		t.Fatalf("the response was lost along with the error: %+v", got)
+	}
+}
+
 // A resolved token leaves no trace: otherwise the journal would fill up on every
 // restore, and detail would carry a token that interests nobody.
 func TestRestoreAuditsNothingWhenAllResolved(t *testing.T) {

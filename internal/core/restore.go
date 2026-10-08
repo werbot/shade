@@ -12,6 +12,10 @@ import (
 // Restore substitutes the real values in place of the placeholders. A token that
 // is not in the project store, stays in the text as is and goes into Unresolved:
 // discarding it would mean silently handing over text with a hole where the value was.
+//
+// The error of writing the trace of an unresolved token is returned together with the assembled
+// the result: the response is ready, but the caller must learn about the lost trace. In
+// In Anonymize the decision is the opposite — there the auxiliary write is not about security.
 func (e *Engine) Restore(ctx context.Context, text string) (Result, error) {
 	toks := placeholder.FindNormalized(text)
 	// The substitution goes right to left: a replacement changes the length of the fragment, and after
