@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/werbot/shade/internal/core"
 	"github.com/werbot/shade/internal/store"
@@ -214,3 +216,27 @@ func fail(stdio IO, name string, code int, err error) int {
 	fmt.Fprintf(stdio.Err, "%s: %v\n", name, err)
 	return code
 }
+
+// defaultListLimit is how many rows the list commands print (`entities list`,
+// `audit`). The spec declares no flag for this, and unbounded output on a
+// a large project it is unreadable.
+const defaultListLimit = 100
+
+// parseAge converts an age like 30d into a duration. The unit d is a day: ages in
+// the CLI are given in days (`--older-than 30d`, `--since 7d`, `entities_ttl`), while
+// time.ParseDuration does not know such a unit.
+func parseAge(s string) (time.Duration, error) {
+	days, ok := strings.CutSuffix(s, "d")
+	if !ok {
+		return 0, fmt.Errorf("age %q: expected a number of days with a d suffix, for example 30d", s)
+	}
+	n, err := strconv.Atoi(days)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("age %q: expected a number of days with a d suffix, for example 30d", s)
+	}
+	return time.Duration(n) * 24 * time.Hour, nil
+}
+
+// stamp prints a moment from unix seconds in local time: the database stores time
+// as Unix, while a human needs a readable form.
+func stamp(unix int64) string { return time.Unix(unix, 0).Format(time.DateTime) }
