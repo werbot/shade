@@ -54,6 +54,12 @@ func runDeanon(args []string, stdio IO) int {
 	if err != nil {
 		return fail(stdio, "deanon", 1, err)
 	}
+	// A journal failure does not take the answer away: under fail_open_log the policy explicitly allows
+	// to hand out an incomplete answer, and a broken record has no right to cancel it.
+	// The policy and the codes below do not change — the warning goes to stderr.
+	if res.RecordErr != nil {
+		fmt.Fprintf(stdio.Err, "deanon: journal not recorded: %v\n", res.RecordErr)
+	}
 
 	// blocked — the answer is not handed out: partially restored text does not
 	// leave. Partial output is allowed by fail_open_log, and then the policy has

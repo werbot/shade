@@ -1,67 +1,12 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/werbot/shade/internal/crypt"
-	"github.com/werbot/shade/internal/store"
 )
-
-// testStore opens the test store and resolves the project of directory dir: the journal and
-// row ages are edited only through the opened Store.DB(), a separate API for the sake of
-// tests is not introduced.
-func testStore(t *testing.T, home, dir string) (store.Project, *store.Store) {
-	t.Helper()
-	t.Setenv("SHADE_HOME", home)
-	key, err := crypt.LoadOrCreateKey(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, err := store.Open(home, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	p, err := st.ProjectForPath(context.Background(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p, st
-}
-
-// backdate moves last_seen_at of all entities of the project into the past: prune
-// compares the age with the current time, and a test cannot wait a month.
-func backdate(t *testing.T, home, dir string, d time.Duration) {
-	t.Helper()
-	p, st := testStore(t, home, dir)
-	if _, err := st.DB().ExecContext(context.Background(),
-		`UPDATE entities SET last_seen_at=? WHERE project_id=?`,
-		time.Now().Add(-d).Unix(), p.ID); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// seedAudit puts an entry with the given time and action into the journal: the CLI writes
-// only unresolved, while the filters must be checked on the second kind of entry too.
-func seedAudit(t *testing.T, home, dir string, ts int64, action, detail string) {
-	t.Helper()
-	p, st := testStore(t, home, dir)
-	direction := "to_model"
-	if action == "unresolved" {
-		direction = "from_model"
-	}
-	if _, err := st.DB().ExecContext(context.Background(),
-		`INSERT INTO audit(ts, project_id, direction, adapter, action, detail)
-		 VALUES(?, ?, ?, 'cli', ?, ?)`,
-		ts, p.ID, direction, action, detail); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestEntitiesListShowsPlaceholdersOnly(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
@@ -153,6 +98,73 @@ func TestEntitiesPruneHonoursConfigTTL(t *testing.T) {
 	}
 }
 
+// The flag value must not only be parsed, but applied: with age = 0
+// the forty-day entity is still deleted, and "deleted 1" adds up. Here
+// the entity is aged by just an hour, so the right answer is zero deleted.
+func TestEntitiesPruneOlderThanKeepsFresh(t *testing.T) {
+	home, dir := t.TempDir(), gitDir(t)
+	if code, _, stderr := runCLI(t, home, dir, []string{"anon"}, "password="+secretValue); code != 0 {
+		t.Fatalf("setup: code=%d, err=%q", code, stderr)
+	}
+	backdate(t, home, dir, time.Hour)
+
+	code, out, stderr := runCLI(t, home, dir, []string{"entities", "prune", "--older-than", "30d"}, "")
+	if code != 0 {
+		t.Fatalf("code=%d, err=%q", code, stderr)
+	}
+	if !strings.Contains(out, "entities deleted: 0") {
+		t.Fatalf("an entity an hour old did not survive the 30d age: %q", out)
+	}
+}
+
+// An age overflow must not turn into a boundary in the future:
+// a negative time.Duration in PruneEntities would wipe all entities of the project, and
+// values live only in value_enc — the loss cannot be rolled back. That is why the input
+// is rejected, and the table stays untouched.
+func TestEntitiesPruneRejectsOverflowingAge(t *testing.T) {
+	home, dir := t.TempDir(), gitDir(t)
+	if code, _, stderr := runCLI(t, home, dir, []string{"anon"}, "password="+secretValue); code != 0 {
+		t.Fatalf("setup: code=%d, err=%q", code, stderr)
+	}
+	code, _, stderr := runCLI(t, home, dir, []string{"entities", "prune", "--older-than", "200000d"}, "")
+	if code != 2 {
+		t.Fatalf("code %d, expected 2 (%s)", code, stderr)
+	}
+	code, list, _ := runCLI(t, home, dir, []string{"entities", "list"}, "")
+	if code != 0 || !strings.Contains(list, "<SECRET_1>") {
+		t.Fatalf("the entity is lost: code=%d, %q", code, list)
+	}
+}
+
+// Boundary: an age that is still representable in time.Duration must not be rejected.
+func TestEntitiesPruneAcceptsLargestAge(t *testing.T) {
+	home, dir := t.TempDir(), gitDir(t)
+	if code, _, stderr := runCLI(t, home, dir, []string{"anon"}, "password="+secretValue); code != 0 {
+		t.Fatalf("setup: code=%d, err=%q", code, stderr)
+	}
+	code, out, stderr := runCLI(t, home, dir, []string{"entities", "prune", "--older-than", "106751d"}, "")
+	if code != 0 {
+		t.Fatalf("a representable age was rejected: code %d (%s)", code, stderr)
+	}
+	if !strings.Contains(out, "entities deleted: 0") {
+		t.Fatalf("got %q", out)
+	}
+}
+
+// An age from the config is an operational error (code 1), not a call error: fixing
+// it to the user in a file, not in the arguments.
+func TestEntitiesPruneConfigAgeErrorIsNotUsageError(t *testing.T) {
+	home, dir := t.TempDir(), gitDir(t)
+	if err := os.WriteFile(filepath.Join(dir, ".shade.toml"),
+		[]byte("entities_ttl = \"200000d\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCLI(t, home, dir, []string{"entities", "prune"}, "")
+	if code != 1 {
+		t.Fatalf("code %d, expected 1 (%s)", code, stderr)
+	}
+}
+
 func TestEntitiesRejectsBadArgs(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	for _, tc := range []struct {
@@ -161,6 +173,7 @@ func TestEntitiesRejectsBadArgs(t *testing.T) {
 	}{
 		{"age without a suffix", []string{"entities", "prune", "--older-than", "30"}},
 		{"negative age", []string{"entities", "prune", "--older-than=-1d"}},
+		{"overflowing age", []string{"entities", "prune", "--older-than", "200000d"}},
 		{"foreign flag", []string{"entities", "list", "--json"}},
 		{"unexpected argument", []string{"entities", "list", "extra"}},
 		{"unknown subcommand", []string{"entities", "nope"}},
@@ -246,6 +259,7 @@ func TestAuditRejectsBadArgs(t *testing.T) {
 	}{
 		{"foreign flag", []string{"audit", "--json"}},
 		{"age without a suffix", []string{"audit", "--since", "7"}},
+		{"overflowing age", []string{"audit", "--since", "200000d"}},
 		{"unexpected argument", []string{"audit", "extra"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -2,11 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/werbot/shade/internal/crypt"
+	"github.com/werbot/shade/internal/store"
 )
 
 // runCLI is the only test entry point into the CLI for all commands: home → SHADE_HOME,
@@ -43,6 +48,57 @@ func gitDir(t *testing.T) string {
 		t.Fatalf("git init %s: %v: %s", dir, err, out)
 	}
 	return dir
+}
+
+// testStore opens the test store and resolves the project of directory dir: the journal,
+// row ages and triggers are set only through the opened Store.DB(),
+// a separate API for the sake of tests is not introduced.
+func testStore(t *testing.T, home, dir string) (store.Project, *store.Store) {
+	t.Helper()
+	t.Setenv("SHADE_HOME", home)
+	key, err := crypt.LoadOrCreateKey(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(home, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p, err := st.ProjectForPath(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p, st
+}
+
+// backdate moves last_seen_at of all entities of the project into the past: prune
+// compares the age with the current time, and a test cannot wait a month.
+func backdate(t *testing.T, home, dir string, d time.Duration) {
+	t.Helper()
+	p, st := testStore(t, home, dir)
+	if _, err := st.DB().ExecContext(context.Background(),
+		`UPDATE entities SET last_seen_at=? WHERE project_id=?`,
+		time.Now().Add(-d).Unix(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedAudit puts an entry with the given time and action into the journal: the CLI writes
+// only unresolved, while the filters must be checked on the second kind of entry too.
+func seedAudit(t *testing.T, home, dir string, ts int64, action, detail string) {
+	t.Helper()
+	p, st := testStore(t, home, dir)
+	direction := "to_model"
+	if action == "unresolved" {
+		direction = "from_model"
+	}
+	if _, err := st.DB().ExecContext(context.Background(),
+		`INSERT INTO audit(ts, project_id, direction, adapter, action, detail)
+		 VALUES(?, ?, ?, 'cli', ?, ?)`,
+		ts, p.ID, direction, action, detail); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDispatchUnknownCommand(t *testing.T) {

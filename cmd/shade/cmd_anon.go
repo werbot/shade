@@ -48,6 +48,11 @@ func runAnon(args []string, stdio IO) int {
 	if err != nil {
 		return fail(stdio, "anon", 1, err)
 	}
+	// A counter failure does not take the prompt away, but must be visible: otherwise the loss of
+	// statistics is not visible anywhere. The return code does not change — the text is ready.
+	if res.RecordErr != nil {
+		fmt.Fprintf(stdio.Err, "anon: stats not recorded: %v\n", res.RecordErr)
+	}
 	if !a.json {
 		fmt.Fprint(stdio.Out, res.Text)
 		return 0

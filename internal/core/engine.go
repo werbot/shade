@@ -36,6 +36,13 @@ type Result struct {
 	// A span that covered a Guard substitution is already clipped to its boundaries here, and
 	// hence one rule can give several adjacent spans.
 	Spans []rules.Span
+	// RecordErr — a failure of an auxiliary write: of the hit counter during
+	// the anonymization, of the trace of an unresolved token during the restore. On
+	// the result it has no effect — both the prompt and the response are already ready, and handing them over matters more,
+	// than writing a row, — that is why it travels as a separate field, and not as a returned
+	// an error. The caller must show it to the user: otherwise a lost
+	// trace is visible nowhere.
+	RecordErr error
 }
 
 // New assembles an engine for the project that owns the directory dir.

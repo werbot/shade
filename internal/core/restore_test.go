@@ -107,6 +107,9 @@ func TestRestoreRecordsUnresolvedInAudit(t *testing.T) {
 	if got.Text != "see <HOST_99> there" || len(got.Unresolved) != 1 {
 		t.Fatalf("writing to the journal changed the result: %+v", got)
 	}
+	if got.RecordErr != nil {
+		t.Fatalf("the write succeeded, but RecordErr is filled in: %v", got.RecordErr)
+	}
 	entries, err := e.Store().Audit(ctx, e.ProjectID(), 10, store.AuditFilter{})
 	if err != nil {
 		t.Fatal(err)
@@ -121,22 +124,40 @@ func TestRestoreRecordsUnresolvedInAudit(t *testing.T) {
 	}
 }
 
-// A decision opposite to the statistics (TestAnonymizeSurvivesRuleHitFailure):
-// losing the trace of an unresolved token comes back as an error, but the response is
-// is not lost — the text and the list of tokens are assembled before the write. The failure is injected
-// dropping the table: Resolve works, the journal does not.
-func TestRestoreReportsAuditFailureWithResult(t *testing.T) {
+// A decision opposite in visibility, but not in the fate of the result: a journal
+// failure travels to RecordErr, while the text and the list of tokens stay in place.
+// The response is ready, and handing it over matters more than writing a row — under fail_open_log
+// the policy explicitly allows handing over an incomplete response, and a broken journal has no
+// right to take this response away.
+func TestRestoreReportsRecordFailureWithoutLosingResult(t *testing.T) {
 	e := newEngine(t)
-	if _, err := e.Store().DB().ExecContext(ctx, `DROP TABLE audit`); err != nil {
+	failInserts(t, e, "audit")
+	got, err := e.Restore(ctx, "see <HOST_99> there")
+	if err != nil {
+		t.Fatalf("a journal failure must not take the response away: %v", err)
+	}
+	if got.RecordErr == nil {
+		t.Fatal("losing the trace of an unresolved token must be visible in RecordErr")
+	}
+	if got.Text != "see <HOST_99> there" || len(got.Unresolved) != 1 ||
+		got.Unresolved[0].Type != "HOST" || got.Unresolved[0].N != 99 {
+		t.Fatalf("the response was lost along with the journal failure: %+v", got)
+	}
+}
+
+// The fatal channel stays for the case it exists for: if the response could not be
+// assembled, the error is returned, and not hidden in RecordErr.
+func TestRestoreFailsWhenResolutionFails(t *testing.T) {
+	e := newEngine(t)
+	if _, err := e.Store().DB().ExecContext(ctx, `DROP TABLE entities`); err != nil {
 		t.Fatal(err)
 	}
 	got, err := e.Restore(ctx, "see <HOST_99> there")
 	if err == nil {
-		t.Fatal("losing the trace of an unresolved token must be an error")
+		t.Fatal("a store failure during resolution must be an error")
 	}
-	if got.Text != "see <HOST_99> there" || len(got.Unresolved) != 1 ||
-		got.Unresolved[0].Type != "HOST" || got.Unresolved[0].N != 99 {
-		t.Fatalf("the response was lost along with the error: %+v", got)
+	if got.Text != "" || got.Unresolved != nil {
+		t.Fatalf("there must be no result when the response could not be assembled: %+v", got)
 	}
 }
 

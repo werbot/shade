@@ -1,12 +1,26 @@
 package core_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/werbot/shade/internal/core"
 	"github.com/werbot/shade/internal/rules"
 )
+
+// failInserts puts a trigger on the table that kills any insert — that is how
+// a failure of the auxiliary write. A trigger, not DROP TABLE: store.Open calls migrate, and
+// CREATE TABLE IF NOT EXISTS would recreate the dropped table when the
+// store is reopened, while the trigger survives a reopen.
+func failInserts(t *testing.T, e *core.Engine, table string) {
+	t.Helper()
+	if _, err := e.Store().DB().ExecContext(ctx, fmt.Sprintf(
+		`CREATE TRIGGER %s_no_write BEFORE INSERT ON %s BEGIN SELECT RAISE(ABORT, 'write unavailable'); END`,
+		table, table)); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // ruleHits reads a rule's statistics directly: there is no reader for it in the API, its
 // consumer is the phase 5 UI, and the CLI does not print it. The sum over days, not a single
@@ -66,16 +80,17 @@ func TestAnonymizeCountsRuleHitOnceForSplitSpan(t *testing.T) {
 
 // A counter failure does not cancel the anonymization: rule_hits is auxiliary data
 // for the phase 5 UI, not a security record. A ready prompt cannot be recovered,
-// a lost hit is recoverable, so the error of the auxiliary write does not go out
-// go out. The failure is injected by dropping the table: Allocate works, the counter does not.
+// a lost hit is recoverable, so the failure travels to RecordErr — visible
+// to the caller, but not taking the result away.
 func TestAnonymizeSurvivesRuleHitFailure(t *testing.T) {
 	e := newEngine(t)
-	if _, err := e.Store().DB().ExecContext(ctx, `DROP TABLE rule_hits`); err != nil {
-		t.Fatal(err)
-	}
+	failInserts(t, e, "rule_hits")
 	got, err := e.Anonymize(ctx, "password="+secret)
 	if err != nil {
 		t.Fatalf("a counter failure brought down the anonymization: %v", err)
+	}
+	if got.RecordErr == nil {
+		t.Fatal("a counter failure must be visible in RecordErr")
 	}
 	if strings.Contains(got.Text, secret) {
 		t.Fatalf("the secret was not masked: %q", got.Text)

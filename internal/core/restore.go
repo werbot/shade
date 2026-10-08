@@ -13,9 +13,11 @@ import (
 // is not in the project store, stays in the text as is and goes into Unresolved:
 // discarding it would mean silently handing over text with a hole where the value was.
 //
-// The error of writing the trace of an unresolved token is returned together with the assembled
-// the result: the response is ready, but the caller must learn about the lost trace. In
-// In Anonymize the decision is the opposite — there the auxiliary write is not about security.
+// The error means the response could not be assembled (Resolve refused not because
+// the value is missing). A failure to write the trace of an unresolved token is not an error: the trace
+// must be visible, but not fatal, because under fail_open_log the policy
+// explicitly allows handing over an incomplete response, and a broken journal has no right to
+// take the response away. The failure travels to Result.RecordErr.
 func (e *Engine) Restore(ctx context.Context, text string) (Result, error) {
 	toks := placeholder.FindNormalized(text)
 	// The substitution goes right to left: a replacement changes the length of the fragment, and after
@@ -39,14 +41,12 @@ func (e *Engine) Restore(ctx context.Context, text string) (Result, error) {
 	slices.Reverse(unresolved)
 	res := Result{Text: out, Unresolved: unresolved}
 
-	// The trace of an unresolved token is not muted: a lost record is what
-	// the caller must learn. The result does not change — the response is already
-	// assembled, and the journal is kept for the trace, not for it.
-	var errs []error
+	// The trace of an unresolved token is not lost silently, but it does not take the response away either:
+	// the errors of all writes are joined into RecordErr, and the returned error
+	// stays for the single case where the text could not be assembled.
 	for _, tok := range unresolved {
-		if err := e.store.RecordUnresolved(ctx, e.project.ID, e.adapter, tok.Type, tok.Raw); err != nil {
-			errs = append(errs, err)
-		}
+		res.RecordErr = errors.Join(res.RecordErr,
+			e.store.RecordUnresolved(ctx, e.project.ID, e.adapter, tok.Type, tok.Raw))
 	}
-	return res, errors.Join(errs...)
+	return res, nil
 }

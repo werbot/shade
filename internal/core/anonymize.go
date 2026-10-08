@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -17,7 +18,8 @@ import (
 // placeholder, so a repeated run over the text does not change the token.
 //
 // The error means the text could not be produced (Allocate). A failure of the write of
-// the statistics is not an error — the reason is given at BumpRuleHit below.
+// the statistics is not an error — it travels to Result.RecordErr, because
+// the counter is auxiliary, and the prompt is irreplaceable.
 func (e *Engine) Anonymize(ctx context.Context, text string) (Result, error) {
 	masked, restore, spans := scanText(text, e.ruleSet)
 	if len(spans) == 0 {
@@ -55,14 +57,14 @@ func (e *Engine) Anonymize(ctx context.Context, text string) (Result, error) {
 		hit[span.Rule] = true
 	}
 	for _, name := range slices.Sorted(maps.Keys(hit)) {
-		// A counter failure does not cancel the anonymization, so the error does not go out
-		// go out: rule_hits is auxiliary data for the phase 5 UI, not
-		// security record. A ready prompt is irreplaceable, a lost
-		// hit can be recovered, and the price of the decision is an undercount in the statistics,
-		// until the database starts writing. The opposite decision is in Restore: there the auxiliary
-		// record — a trace of an unresolved token, and losing it comes back
-		// as an error together with the result.
-		_ = e.store.BumpRuleHit(ctx, e.project.ID, name, day)
+		// A counter failure does not cancel the anonymization: rule_hits is auxiliary
+		// data for the phase 5 UI, not a security record. A ready prompt
+		// is irreplaceable, a lost hit can be recovered, so the error travels
+		// to RecordErr — visible to the caller, but not fatal. The price of the decision is
+		// an undercount in the statistics until the database starts writing. The opposite decision
+		// would be with the trace of an unresolved token: there a lost record means that
+		// a response with a hole went out and nobody would ever learn about it.
+		res.RecordErr = errors.Join(res.RecordErr, e.store.BumpRuleHit(ctx, e.project.ID, name, day))
 	}
 	return res, nil
 }
