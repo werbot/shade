@@ -55,32 +55,45 @@ func runDeanon(args []string, stdio IO) int {
 		return fail(stdio, "deanon", 1, err)
 	}
 
+	// blocked — the answer is not handed out: partially restored text does not
+	// leave. Partial output is allowed by fail_open_log, and then the policy has
+	// a visible difference, not just a return code.
+	blocked := len(res.Unresolved) > 0 && cfg.FailPolicy != "fail_open_log"
+
 	if len(res.Unresolved) > 0 {
 		// Tokens, and only they: stdout goes on to the model, and stderr is read
 		// by a human, and a value in it would bring the secret back into the log.
 		for _, tok := range res.Unresolved {
 			fmt.Fprintf(stdio.Err, "deanon: unresolved placeholder %s\n", tok.Raw)
 		}
-		// fail_closed blocks the answer entirely: text that could not be
-		// restored is not handed out in any form — neither with holes nor partially.
-		// Whoever needs partial output picks fail_open_log: then the
-		// policy has a visible difference, not just a return code.
-		if cfg.FailPolicy != "fail_open_log" {
-			return 3
+		if !blocked {
+			fmt.Fprintln(stdio.Err, "deanon: fail_policy=fail_open_log — unresolved placeholders do not block the output")
 		}
-		fmt.Fprintln(stdio.Err, "deanon: fail_policy=fail_open_log — unresolved placeholders do not block the output")
 	}
 
-	if !a.json {
-		fmt.Fprint(stdio.Out, res.Text)
-		return 0
+	// The answer is blocked, not the diagnostics: under --json the document is printed
+	// under any policy, while an empty text together with code 3 expresses the block. Otherwise
+	// the declared form would be unreachable exactly when it is needed, and
+	// a machine consumer would have to parse stderr — the very thing that
+	// --json was supposed to avoid. In text mode an empty answer still stays
+	// an empty stdout.
+	answer := res.Text
+	if blocked {
+		answer = ""
 	}
-	out := jsonDeanonResult{Text: res.Text, Unresolved: make([]jsonUnresolved, 0, len(res.Unresolved))}
-	for _, tok := range res.Unresolved {
-		out.Unresolved = append(out.Unresolved, jsonUnresolved{Type: tok.Type, Raw: tok.Raw})
+	if a.json {
+		out := jsonDeanonResult{Text: answer, Unresolved: make([]jsonUnresolved, 0, len(res.Unresolved))}
+		for _, tok := range res.Unresolved {
+			out.Unresolved = append(out.Unresolved, jsonUnresolved{Type: tok.Type, Raw: tok.Raw})
+		}
+		if err := writeJSON(stdio.Out, out); err != nil {
+			return fail(stdio, "deanon", 1, err)
+		}
+	} else {
+		fmt.Fprint(stdio.Out, answer)
 	}
-	if err := writeJSON(stdio.Out, out); err != nil {
-		return fail(stdio, "deanon", 1, err)
+	if blocked {
+		return 3
 	}
 	return 0
 }

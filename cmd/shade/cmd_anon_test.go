@@ -52,28 +52,55 @@ func TestAnonMasksAndDeanonRestores(t *testing.T) {
 	}
 }
 
-// fail_closed blocks the whole answer: with a non-empty Unresolved nothing goes to stdout
-// nothing. A mixed input makes the check distinguishing — the resolvable part the text
-// contains, and without the block it would have gone outside.
+// In text mode fail_closed blocks the whole answer: with a non-empty Unresolved
+// nothing goes to stdout. A mixed input makes the check distinguishing —
+// resolvable part is contained in the text, and without the block it would have gone outside.
 func TestDeanonBlocksStdoutOnUnresolved(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	masked := mixedInput(t, home, dir)
 
-	// Both output forms: the block must not depend on --json.
-	for _, args := range [][]string{{"deanon"}, {"deanon", "--json"}} {
-		code, stdout, stderr := runCLI(t, home, dir, args, masked)
-		if code != 3 {
-			t.Fatalf("%v: code %d, expected 3 (%s)", args, code, stderr)
-		}
-		if stdout != "" {
-			t.Fatalf("%v: fail_closed must not return an answer: stdout=%q", args, stdout)
-		}
-		if !strings.Contains(stderr, "HOST_99") {
-			t.Fatalf("%v: stderr must name the token: %q", args, stderr)
-		}
-		if strings.Contains(stderr, secretValue) {
-			t.Fatalf("%v: stderr with a value: %q", args, stderr)
-		}
+	code, stdout, stderr := runCLI(t, home, dir, []string{"deanon"}, masked)
+	if code != 3 {
+		t.Fatalf("code %d, expected 3 (%s)", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("fail_closed must not return an answer: stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, "HOST_99") {
+		t.Fatalf("stderr must name the token: %q", stderr)
+	}
+	if strings.Contains(stderr, secretValue) {
+		t.Fatalf("stderr with a value: %q", stderr)
+	}
+}
+
+// Under --json the contract for adapters is available even when blocked: text is empty, and
+// the list of unresolved tokens is filled. The answer is blocked, not the diagnostics —
+// an "empty answer" and an "empty input" can be told apart by the code and by a non-empty
+// unresolved, whereas an unreachable form would not have been worth declaring.
+func TestDeanonJSONReportsUnresolvedWhenBlocked(t *testing.T) {
+	home, dir := t.TempDir(), gitDir(t)
+	masked := mixedInput(t, home, dir)
+
+	code, stdout, stderr := runCLI(t, home, dir, []string{"deanon", "--json"}, masked)
+	if code != 3 {
+		t.Fatalf("code %d, expected 3 (%s)", code, stderr)
+	}
+	var got struct {
+		Text       string                       `json:"text"`
+		Unresolved []struct{ Type, Raw string } `json:"unresolved"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %q (%v)", stdout, err)
+	}
+	if got.Text != "" {
+		t.Fatalf("a blocked answer must be empty: %q", got.Text)
+	}
+	if len(got.Unresolved) != 1 || got.Unresolved[0].Type != "HOST" || got.Unresolved[0].Raw != "<HOST_99>" {
+		t.Fatalf("unresolved: %+v", got.Unresolved)
+	}
+	if strings.Contains(stdout, secretValue) {
+		t.Fatalf("--json leaked a value: %q", stdout)
 	}
 }
 
