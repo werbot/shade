@@ -88,6 +88,65 @@ func TestFindNormalizedOffsetsAreBytes(t *testing.T) {
 	}
 }
 
+// TestFindNormalizedRejectsTokenGluedToWord: truncation at max_tokens is the end
+// the token, not a junction with a letter. \b in Go knows only the ASCII word, so
+// a Cyrillic letter right next to the number does not count as a boundary: without protection
+// tier 2 would substitute the value into text where the token was never written.
+func TestFindNormalizedRejectsTokenGluedToWord(t *testing.T) {
+	for _, s := range []string{
+		"<KEY_1яяя",
+		"файл <PATH_2пример",
+		"<KEY_1abc",
+		"<KEY_1_abc",
+		"<KEY_1АБВ",
+	} {
+		if got := placeholder.FindNormalized(s); len(got) != 0 {
+			t.Fatalf("%q: gluing to a letter was taken for a token: %+v", s, got)
+		}
+	}
+}
+
+// TestFindNormalizedKeepsTruncationAtBoundary: truncation at max_tokens at the end
+// string and a token followed by a separator must match.
+func TestFindNormalizedKeepsTruncationAtBoundary(t *testing.T) {
+	cases := []struct {
+		in   string
+		raws []string
+	}{
+		{"<KEY_1", []string{"<KEY_1"}},
+		{"<KEY_1 <SECRET_2", []string{"<KEY_1", "<SECRET_2"}},
+		{"<KEY_1яяя и <SECRET_2", []string{"<SECRET_2"}},
+		{"<KEY_1, затем текст", []string{"<KEY_1"}},
+		{"хвост <KEY_1\n", []string{"<KEY_1"}},
+	}
+	for _, c := range cases {
+		got := placeholder.FindNormalized(c.in)
+		if len(got) != len(c.raws) {
+			t.Fatalf("%q: got %+v, want %d tokens", c.in, got, len(c.raws))
+		}
+		for i, raw := range c.raws {
+			if got[i].Raw != raw {
+				t.Fatalf("%q: token %d = %q, want %q", c.in, i, got[i].Raw, raw)
+			}
+			if c.in[got[i].Start:got[i].End] != raw {
+				t.Fatalf("%q: bounds %d..%d do not give %q", c.in, got[i].Start, got[i].End, raw)
+			}
+		}
+	}
+}
+
+// TestFindStaysCanonicalNearCyrillic: the canonical regexp requires a closing
+// brackets and does not depend on the word boundary — the change must not cause a regression.
+func TestFindStaysCanonicalNearCyrillic(t *testing.T) {
+	if got := placeholder.Find("<KEY_1"); len(got) != 0 {
+		t.Fatalf("without a closing bracket: %+v", got)
+	}
+	got := placeholder.Find("файл <KEY_1>яяя")
+	if len(got) != 1 || got[0].Raw != "<KEY_1>" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 // TestFindOffsetsAreBytes checks the same for the canonical search.
 func TestFindOffsetsAreBytes(t *testing.T) {
 	text := "тут <KEY_7> и всё"
