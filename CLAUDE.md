@@ -2,7 +2,7 @@
 0. Always use the orchestrator, agents and subagents.
 1. Use the built-in Orca browser for testing and work.
 2. When the work is finished, release unused resources.
-3. All chat communication, documentation and code comments in Russian
+3. If you don't know the answer, don't make it up!
 
 ## Skills workflow
 
@@ -26,7 +26,7 @@ Where a skill conflicts with a rule in this file, the rule in this file wins.
 - Ponytail limits what is built beyond the spec, never the spec itself. Requirements from the task (visual and functional parity, reusable components, tests) are not over-engineering.
 - Before each commit, run /ponytail-review on the diff and apply the findings. Once per phase, run /ponytail-audit, then /ponytail-debt to collect deferred shortcuts.
 
-## Code quality standards
+## Code quality standards (/principe)
 
 All code you write or change must comply with the principles in /principe. If you have not read them in this session, read them before starting the task.
 

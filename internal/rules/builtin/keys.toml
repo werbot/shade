@@ -1,0 +1,166 @@
+# Key material and vendor formats: PEM, keys, hashes, config blobs,
+# vendor tokens.
+#
+# This is a port of _RULES from ~/.claude/hooks/redact_output.py. The order is set by the
+# order goes from specific to general, so that the placeholder names the most precise
+# rule. Enabled rules have no enabled flag: a missing key means
+# an enabled rule, and in the files you see exactly the nine rules that are disabled.
+#
+# RE2 cannot do lookaround or backreferences, so the guards of the original live
+# in the validator field (luhn, ip_global, ipv6_global, phone, random_enough), and the
+# boundaries — in the pattern itself. Only the first group of the pattern is masked.
+
+[[rules]]
+id = "ssh_key" # the whole private key, together with the PEM headers
+type = "SECRET"
+kind = "regex"
+pattern = '''(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----'''
+keywords = ["private key"]
+order = 10
+
+[[rules]]
+id = "putty_ppk" # base64 lines after Private-Lines, the file header stays
+type = "KEY"
+kind = "regex"
+pattern = '''Private-Lines:[ \t]*\d+[ \t]*\n([A-Za-z0-9+/=]+(?:[ \t]*\n[ \t]*[A-Za-z0-9+/=]+)*)'''
+secret_group = 1
+keywords = ["private-lines"]
+order = 20
+
+[[rules]]
+id = "awg_init" # a fake AmneziaWG init packet
+type = "KEY"
+kind = "regex"
+pattern = '''<b\s+0x[a-fA-F0-9]{20,}>'''
+keywords = ["<b"]
+order = 30
+
+[[rules]]
+id = "awg_params" # obfuscation parameters: they reveal the handshake fingerprint
+type = "KEY"
+kind = "regex"
+pattern = '''(?m)^(?:Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4)[ \t]*=[ \t]*(\d+)'''
+secret_group = 1
+order = 40
+
+[[rules]]
+id = "wg_key" # a WireGuard key tied to a field name: bare base64 is not a key
+type = "KEY"
+kind = "regex"
+pattern = '''(?i)(?:Private|Public|Preshared|Peer)Key\s*=\s*([A-Za-z0-9+/]{43}=)'''
+secret_group = 1
+keywords = ["key"]
+order = 50
+
+[[rules]]
+id = "hash" # bcrypt, argon2, scrypt and crypt(3): such hashes are broken offline
+type = "SECRET"
+kind = "regex"
+pattern = '''\$2[aby]\$\d{2}\$[A-Za-z0-9./]{53}|\$(?:argon2(?:id|i|d)|scrypt)\$[A-Za-z0-9$,=+/._\-]{20,}|\$(?:1|5|6|7|y|gy|apr1|md5|sha1)\$[A-Za-z0-9./$,=+_\-]{12,}'''
+keywords = ["$"]
+order = 60
+
+[[rules]]
+id = "docker_auth" # the registry auth blob in config.json
+type = "SECRET"
+kind = "regex"
+pattern = '''"auth"\s*:\s*"([A-Za-z0-9+/]{20,}={0,2})"'''
+secret_group = 1
+keywords = ["\"auth\""]
+order = 70
+
+[[rules]]
+id = "k8s_key_data" # client-key-data and client-certificate-data in a manifest
+type = "KEY"
+kind = "regex"
+pattern = '''(?:client-key-data|client-certificate-data)\s*:\s*([A-Za-z0-9+/=]{20,})'''
+secret_group = 1
+keywords = ["-data"]
+order = 80
+
+[[rules]]
+id = "gcp_key_id" # the private_key_id of a GCP service account
+type = "KEY"
+kind = "regex"
+pattern = '''"private_key_id"\s*:\s*"([a-f0-9]{8,})'''
+secret_group = 1
+keywords = ["private_key_id"]
+order = 90
+
+[[rules]]
+id = "azure_storage" # AccountKey from an Azure Storage connection string
+type = "KEY"
+kind = "regex"
+pattern = '''(?i)AccountKey=([A-Za-z0-9+/]{60,}={0,2})'''
+secret_group = 1
+keywords = ["accountkey="]
+order = 100
+
+[[rules]]
+id = "google_api_key" # the format is tied to a prefix that ordinary strings lack
+type = "TOKEN"
+kind = "regex"
+pattern = '''AIza[0-9A-Za-z_\-]{4,}'''
+keywords = ["aiza"]
+order = 110
+
+[[rules]]
+id = "stripe"
+type = "TOKEN"
+kind = "regex"
+pattern = '''\b(?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,}'''
+keywords = ["_live_", "_test_"]
+order = 120
+
+[[rules]]
+id = "digitalocean"
+type = "TOKEN"
+kind = "regex"
+pattern = '''\bdo[opr]_v1_[a-f0-9]{8,}'''
+keywords = ["_v1_"]
+order = 130
+
+[[rules]]
+id = "telegram_bot" # a bot token: either after /bot or as a separate word
+type = "TOKEN"
+kind = "regex"
+pattern = '''(?:^|[^\w]|/bot)(\d{8,}:AA[\w\-]*)'''
+secret_group = 1
+keywords = [":aa"]
+order = 140
+
+[[rules]]
+id = "telegram_session" # a Telethon/Pyrogram session string: that is full access to the account
+type = "SECRET"
+kind = "regex"
+pattern = '''(?i)(?:string_?session|session_?string|session)\s*[:=]\s*["']?([A-Za-z0-9+/=_\-]{80,})'''
+secret_group = 1
+keywords = ["session"]
+order = 150
+
+[[rules]]
+id = "telegram_api_hash" # MTProto application credentials
+type = "KEY"
+kind = "regex"
+pattern = '''(?i)(?:api_hash|app_hash|tg_api_hash)\s*[:=]\s*["']?([a-f0-9]{8,})'''
+secret_group = 1
+keywords = ["_hash"]
+order = 160
+
+[[rules]]
+id = "slack_webhook"
+type = "TOKEN"
+kind = "regex"
+pattern = '''hooks\.slack\.com/services/([A-Za-z0-9/]{20,})'''
+secret_group = 1
+keywords = ["hooks.slack.com"]
+order = 170
+
+[[rules]]
+id = "discord_webhook"
+type = "TOKEN"
+kind = "regex"
+pattern = '''discord(?:app)?\.com/api/webhooks/\d+/([\w\-]{20,})'''
+secret_group = 1
+keywords = ["/api/webhooks/"]
+order = 180

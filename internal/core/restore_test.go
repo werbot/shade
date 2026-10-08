@@ -1,0 +1,182 @@
+package core_test
+
+import (
+	"testing"
+
+	"github.com/werbot/shade/internal/store"
+)
+
+func TestRestoreRoundTrip(t *testing.T) {
+	e := newEngine(t)
+	src := "хост db.prod.local, юзер <EMAIL_1> password=" + secret
+	anon, err := e.Anonymize(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := e.Restore(ctx, anon.Text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Text != src {
+		t.Fatalf("round trip broken:\n want %q\n got  %q", src, back.Text)
+	}
+	// this project never issued <EMAIL_1>: the restore leaves it as is
+	// and reports it — silently handing over text with a hole would be worse.
+	if len(back.Unresolved) != 1 || back.Unresolved[0].Type != "EMAIL" || back.Unresolved[0].N != 1 {
+		t.Fatalf("got %+v", back.Unresolved)
+	}
+}
+
+func TestRestoreDoesNotReanonymizeExistingPlaceholder(t *testing.T) {
+	e := newEngine(t)
+	src := "host db.prod.local password=" + secret
+	anon, err := e.Anonymize(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// re-anonymizing already anonymized text must not change the token
+	again, err := e.Anonymize(ctx, anon.Text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Text != anon.Text {
+		t.Fatalf("%q -> %q", anon.Text, again.Text)
+	}
+}
+
+// The order of Unresolved must match the order of the tokens in the text: the collection goes
+// right to left, so it is reversed.
+func TestRestoreReportsUnresolvedInTextOrder(t *testing.T) {
+	e := newEngine(t)
+	got, err := e.Restore(ctx, "see <HOST_99>, <EMAIL_7> and <KEY_3>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		Type string
+		N    int
+	}{{"HOST", 99}, {"EMAIL", 7}, {"KEY", 3}}
+	if len(got.Unresolved) != len(want) {
+		t.Fatalf("got %+v", got.Unresolved)
+	}
+	for i, w := range want {
+		if got.Unresolved[i].Type != w.Type || got.Unresolved[i].N != w.N {
+			t.Fatalf("Unresolved[%d] = %+v, want %s %d", i, got.Unresolved[i], w.Type, w.N)
+		}
+	}
+}
+
+func TestRestoreReportsUnknownToken(t *testing.T) {
+	e := newEngine(t)
+	got, err := e.Restore(ctx, "see <HOST_99> there")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Unresolved) != 1 || got.Unresolved[0].Type != "HOST" || got.Unresolved[0].N != 99 {
+		t.Fatalf("got %+v", got.Unresolved)
+	}
+	if got.Text != "see <HOST_99> there" {
+		t.Fatalf("an unknown token must stay in the text: %q", got.Text)
+	}
+}
+
+func TestRestoreLeavesForeignPlaceholderAlone(t *testing.T) {
+	e := newEngine(t)
+	// the type is not from our set — not our placeholder
+	got, err := e.Restore(ctx, "see <div_1> and <MyClass_2>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "see <div_1> and <MyClass_2>" {
+		t.Fatalf("got %q", got.Text)
+	}
+	if len(got.Unresolved) != 0 {
+		t.Fatalf("got %+v", got.Unresolved)
+	}
+}
+
+// An unresolved token must leave a trace in the journal, but the write does not change
+// the result: the caller gets both the text and the list of tokens — the journal is kept
+// for the trace, not for the response.
+func TestRestoreRecordsUnresolvedInAudit(t *testing.T) {
+	e := newEngine(t)
+	got, err := e.Restore(ctx, "see <HOST_99> there")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "see <HOST_99> there" || len(got.Unresolved) != 1 {
+		t.Fatalf("writing to the journal changed the result: %+v", got)
+	}
+	if got.RecordErr != nil {
+		t.Fatalf("the write succeeded, but RecordErr is filled in: %v", got.RecordErr)
+	}
+	entries, err := e.Store().Audit(ctx, e.ProjectID(), 10, store.AuditFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("in the journal %+v", entries)
+	}
+	en := entries[0]
+	if en.Action != "unresolved" || en.Direction != "from_model" || en.Adapter != "cli" ||
+		en.Type != "HOST" || en.Detail != "<HOST_99>" || en.Rule != "" {
+		t.Fatalf("got %+v", en)
+	}
+}
+
+// A decision opposite in visibility, but not in the fate of the result: a journal
+// failure travels to RecordErr, while the text and the list of tokens stay in place.
+// The response is ready, and handing it over matters more than writing a row — under fail_open_log
+// the policy explicitly allows handing over an incomplete response, and a broken journal has no
+// right to take this response away.
+func TestRestoreReportsRecordFailureWithoutLosingResult(t *testing.T) {
+	e := newEngine(t)
+	failInserts(t, e, "audit")
+	got, err := e.Restore(ctx, "see <HOST_99> there")
+	if err != nil {
+		t.Fatalf("a journal failure must not take the response away: %v", err)
+	}
+	if got.RecordErr == nil {
+		t.Fatal("losing the trace of an unresolved token must be visible in RecordErr")
+	}
+	if got.Text != "see <HOST_99> there" || len(got.Unresolved) != 1 ||
+		got.Unresolved[0].Type != "HOST" || got.Unresolved[0].N != 99 {
+		t.Fatalf("the response was lost along with the journal failure: %+v", got)
+	}
+}
+
+// The fatal channel stays for the case it exists for: if the response could not be
+// assembled, the error is returned, and not hidden in RecordErr.
+func TestRestoreFailsWhenResolutionFails(t *testing.T) {
+	e := newEngine(t)
+	if _, err := e.Store().DB().ExecContext(ctx, `DROP TABLE entities`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.Restore(ctx, "see <HOST_99> there")
+	if err == nil {
+		t.Fatal("a store failure during resolution must be an error")
+	}
+	if got.Text != "" || got.Unresolved != nil {
+		t.Fatalf("there must be no result when the response could not be assembled: %+v", got)
+	}
+}
+
+// A resolved token leaves no trace: otherwise the journal would fill up on every
+// restore, and detail would carry a token that interests nobody.
+func TestRestoreAuditsNothingWhenAllResolved(t *testing.T) {
+	e := newEngine(t)
+	anon, err := e.Anonymize(ctx, "password="+secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Restore(ctx, anon.Text); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := e.Store().Audit(ctx, e.ProjectID(), 10, store.AuditFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a resolved token left a trace: %+v", entries)
+	}
+}

@@ -1,0 +1,20 @@
+# Fixture for importing a gitleaks config: one working rule and two that the import
+# must skip separately without failing the parse of the whole file.
+
+[[rules]]
+id = "aws-access-token"
+regex = '''AKIA([0-9A-Z]{4})'''
+secretGroup = 1
+keywords = ["akia"]
+entropy = 0.0
+
+# Lookahead: RE2 cannot do it, the pattern does not compile.
+[[rules]]
+id = "lookahead"
+regex = '''token(?=\s*=)'''
+
+# A type outside the closed set of placeholder.Types.
+[[rules]]
+id = "unknown-type"
+type = "NOPE"
+regex = '''secret[0-9]+'''
