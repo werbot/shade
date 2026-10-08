@@ -7,11 +7,14 @@ import (
 )
 
 func TestRulesForProjectMergesGlobalAndProject(t *testing.T) {
+	// Enabled: true is required: RulesForProject returns only enabled
+	// rule, and without the flag the test would check not the overlap of scopes but whether
+	// that disabled rules pass the filter.
 	p := project(t)
-	s.AddRule(ctx, nil, rules.Spec{ID: "global-rule", Type: "SECRET", Kind: "regex", Pattern: `G1`})
-	s.AddRule(ctx, nil, rules.Spec{ID: "shadowed", Type: "SECRET", Kind: "regex", Pattern: `OLD`})
-	s.AddRule(ctx, &p.ID, rules.Spec{ID: "shadowed", Type: "HOST", Kind: "regex", Pattern: `NEW`})
-	s.AddRule(ctx, &p.ID, rules.Spec{ID: "project-rule", Type: "HOST", Kind: "regex", Pattern: `P1`})
+	s.AddRule(ctx, nil, rules.Spec{ID: "global-rule", Type: "SECRET", Kind: "regex", Pattern: `G1`, Enabled: true})
+	s.AddRule(ctx, nil, rules.Spec{ID: "shadowed", Type: "SECRET", Kind: "regex", Pattern: `OLD`, Enabled: true})
+	s.AddRule(ctx, &p.ID, rules.Spec{ID: "shadowed", Type: "HOST", Kind: "regex", Pattern: `NEW`, Enabled: true})
+	s.AddRule(ctx, &p.ID, rules.Spec{ID: "project-rule", Type: "HOST", Kind: "regex", Pattern: `P1`, Enabled: true})
 
 	rs, err := s.RulesForProject(ctx, p.ID)
 	if err != nil {
@@ -35,11 +38,11 @@ func TestRulesForProjectMergesGlobalAndProject(t *testing.T) {
 func TestAddRuleUpsertsByName(t *testing.T) {
 	p := project(t)
 	if err := s.AddRule(ctx, &p.ID, rules.Spec{ID: "acme", Type: "TICKET",
-		Kind: "regex", Pattern: `ACME-\d{6}`}); err != nil {
+		Kind: "regex", Pattern: `ACME-\d{6}`, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AddRule(ctx, &p.ID, rules.Spec{ID: "acme", Type: "TICKET",
-		Kind: "regex", Pattern: `ACME-\d{8}`}); err != nil {
+		Kind: "regex", Pattern: `ACME-\d{8}`, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := s.RulesForProject(ctx, p.ID)
@@ -103,12 +106,56 @@ func TestRemoveRuleRefusesBuiltin(t *testing.T) {
 	}
 }
 
+// RulesForProject is what goes into Detect. A disabled rule must not reach
+// it: nine opt-in rules of the rule set are seeded with enabled = false, and
+// otherwise they would fire for everyone by default.
+func TestRulesForProjectSkipsDisabled(t *testing.T) {
+	// A store of its own, not the shared s: the test counts enabled rules exactly, while
+	// global rules of neighbouring tests of the package live in the same s and would break
+	// the count. The assertion is not weakened by that.
+	st := openTemp(t)
+	p, err := st.ProjectForPath(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.AddRule(ctx, nil, rules.Spec{ID: "on", Type: "SECRET", Kind: "regex",
+		Pattern: `A1`, Enabled: true})
+	st.AddRule(ctx, nil, rules.Spec{ID: "off", Type: "SECRET", Kind: "regex",
+		Pattern: `B1`}) // Enabled is the zero value, that is false
+
+	rs, err := st.RulesForProject(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 1 || rs[0].Name != "on" {
+		t.Fatalf("a disabled rule must not reach Detect: %+v", rs)
+	}
+}
+
+// ListRules, on the contrary, shows everything — the idempotency of seeding rests on it
+// and the output of `shade rules list`, where the user must see the disabled ones too.
+func TestListRulesShowsDisabled(t *testing.T) {
+	s.AddRule(ctx, nil, rules.Spec{ID: "off", Type: "SECRET", Kind: "regex",
+		Pattern: `C1`})
+	rows, err := s.ListRules(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Name == "off" {
+			return
+		}
+	}
+	t.Fatal("ListRules must show disabled rules")
+}
+
 func TestRulesForProjectExcludesOtherProjects(t *testing.T) {
 	// A project rule is not a shared resource: otherwise one rule would leak into
-	// anonymization of another directory.
+	// anonymization of another directory. Enabled: true — otherwise the rule would not pass
+	// the filter of disabled rules and the test would become vacuously true.
 	other, mine := project(t), project(t)
 	if err := s.AddRule(ctx, &other.ID, rules.Spec{ID: "other-only", Type: "HOST",
-		Kind: "regex", Pattern: `O1`}); err != nil {
+		Kind: "regex", Pattern: `O1`, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := s.RulesForProject(ctx, mine.ID)

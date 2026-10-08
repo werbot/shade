@@ -168,3 +168,16 @@ func TestDetectEntropyKindFiltersLowEntropy(t *testing.T) {
 		t.Fatalf("a low-entropy match must be dropped: %q", got)
 	}
 }
+
+// Detect is a pure function of the set passed in: it does not look at Enabled.
+// The filter of disabled rules lives in RulesForProject, otherwise `shade rules test`
+// (Task 13) could not check a rule before enabling it.
+func TestDetectIgnoresEnabledFlag(t *testing.T) {
+	r, err := rules.Compile(rules.Spec{ID: "off", Type: "SECRET", Kind: "regex", Pattern: `Zq9`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spans := rules.Detect("Zq9", []rules.Rule{r}); len(spans) != 1 {
+		t.Fatalf("a disabled rule passed explicitly must fire: %+v", spans)
+	}
+}

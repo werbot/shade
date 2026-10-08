@@ -48,11 +48,14 @@ const (
 // the same SELECT — the global ones come first, and when folded into a map a same-named
 // a project rule overrides the global one entirely.
 //
-// Disabled rules do get in here: Enabled is handed out, and the decision about
-// applying it, the caller.
+// Disabled rules are filtered out here, and not in Detect: the builtin rule set
+// seeds nine opt-in rules with enabled = false, and without the filter they
+// would fire for everyone. Detect stays a pure function of the passed set
+// — `shade rules test` rests on this, as it needs to run a rule before its
+// enabling.
 func (s *Store) RulesForProject(ctx context.Context, projectID int64) ([]rules.Rule, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+ruleFields+` FROM rules
-		WHERE project_id IS NULL OR project_id = ?
+		WHERE enabled = 1 AND (project_id IS NULL OR project_id = ?)
 		ORDER BY project_id IS NOT NULL`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("rules of project %d: %w", projectID, err)
