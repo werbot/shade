@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/werbot/shade/internal/placeholder"
 	"github.com/werbot/shade/internal/rules"
@@ -39,7 +41,25 @@ func (e *Engine) Anonymize(ctx context.Context, text string) (Result, error) {
 	// restore undoes the NUL doubling and puts the hidden placeholders back
 	// in place. They do not go into Unresolved: these are input tokens for which no replacement is
 	// owed to it, and not the values lost by the store.
-	return Result{Text: restore(b.String()), Spans: spans}, nil
+	res := Result{Text: restore(b.String()), Spans: spans}
+
+	// The statistics are counted by distinct rule names, not by spans: a span
+	// split into parts around a Guard substitution (clip), gives several
+	// spans of one rule, and counting by them would overstate the hits.
+	day := time.Now().UTC().Format("2006-01-02")
+	hit := make(map[string]bool, len(spans))
+	for _, span := range spans {
+		hit[span.Rule] = true
+	}
+	for _, name := range slices.Sorted(maps.Keys(hit)) {
+		if err := e.store.BumpRuleHit(ctx, e.project.ID, name, day); err != nil {
+			// The text is already anonymized and the values are stored: the result is returned
+			// together with the error, so that the caller does not lose the response but learns
+			// that the statistics are incomplete.
+			return res, err
+		}
+	}
+	return res, nil
 }
 
 // Scan finds in the text everything Anonymize would catch, but writes nothing to the

@@ -1,6 +1,10 @@
 package core_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/werbot/shade/internal/store"
+)
 
 func TestRestoreRoundTrip(t *testing.T) {
 	e := newEngine(t)
@@ -88,5 +92,51 @@ func TestRestoreLeavesForeignPlaceholderAlone(t *testing.T) {
 	}
 	if len(got.Unresolved) != 0 {
 		t.Fatalf("got %+v", got.Unresolved)
+	}
+}
+
+// An unresolved token must leave a trace in the journal, but the write does not change
+// the result: the caller gets both the text and the list of tokens — the journal is kept
+// for the trace, not for the response.
+func TestRestoreRecordsUnresolvedInAudit(t *testing.T) {
+	e := newEngine(t)
+	got, err := e.Restore(ctx, "see <HOST_99> there")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "see <HOST_99> there" || len(got.Unresolved) != 1 {
+		t.Fatalf("writing to the journal changed the result: %+v", got)
+	}
+	entries, err := e.Store().Audit(ctx, e.ProjectID(), 10, store.AuditFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("in the journal %+v", entries)
+	}
+	en := entries[0]
+	if en.Action != "unresolved" || en.Direction != "from_model" || en.Adapter != "cli" ||
+		en.Type != "HOST" || en.Detail != "<HOST_99>" || en.Rule != "" {
+		t.Fatalf("got %+v", en)
+	}
+}
+
+// A resolved token leaves no trace: otherwise the journal would fill up on every
+// restore, and detail would carry a token that interests nobody.
+func TestRestoreAuditsNothingWhenAllResolved(t *testing.T) {
+	e := newEngine(t)
+	anon, err := e.Anonymize(ctx, "password="+secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Restore(ctx, anon.Text); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := e.Store().Audit(ctx, e.ProjectID(), 10, store.AuditFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a resolved token left a trace: %+v", entries)
 	}
 }

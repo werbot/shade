@@ -33,5 +33,16 @@ func (e *Engine) Restore(ctx context.Context, text string) (Result, error) {
 	}
 	// The collection went from the end of the text — reverse it so the order matches the text.
 	slices.Reverse(unresolved)
-	return Result{Text: out, Unresolved: unresolved}, nil
+	res := Result{Text: out, Unresolved: unresolved}
+
+	// The trace of an unresolved token is not muted: a lost record is what
+	// the caller must learn. The result does not change — the response is already
+	// assembled, and the journal is kept for the trace, not for it.
+	var errs []error
+	for _, tok := range unresolved {
+		if err := e.store.RecordUnresolved(ctx, e.project.ID, e.adapter, tok.Type, tok.Raw); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return res, errors.Join(errs...)
 }

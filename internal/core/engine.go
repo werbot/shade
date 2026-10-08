@@ -18,9 +18,9 @@ type Engine struct {
 	store   *store.Store
 	project store.Project
 	ruleSet []rules.Rule
-	// adapter — the source of the call (cli | hook | mcp | proxy). Until Task 14 the field is not
-	// read: it is Task 14 that appends a record to audit on an unresolved
-	// placeholder. This is a planned sequence, not a stub for the future.
+	// adapter — the source of the call (cli | hook | mcp | proxy). It is written to the journal
+	// together with the unresolved placeholder: from it one can see which adapter
+	// let a token out whose value is not in the store.
 	adapter string
 }
 
