@@ -50,6 +50,36 @@ func TestValueHashIsTypeScoped(t *testing.T) {
 	}
 }
 
+// A key of the wrong length would not decrypt the old values, so the loader
+// must fail rather than regenerate the file: otherwise a silent "repair" would wipe
+// the whole mapping. The test pins down both the refusal and the byte-for-byte preservation of the file.
+func TestLoadOrCreateKeyRejectsWrongLength(t *testing.T) {
+	for _, size := range []int{16, 64} {
+		home := t.TempDir()
+		path := filepath.Join(home, "key")
+		stored := bytes.Repeat([]byte{7}, size)
+		if err := os.WriteFile(path, stored, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for attempt := range 2 {
+			key, err := crypt.LoadOrCreateKey(home)
+			if err == nil {
+				t.Fatalf("%d bytes: a key of the wrong length was accepted as %d bytes", size, len(key))
+			}
+			if key != nil {
+				t.Fatalf("%d bytes: a key came back together with the error", size)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, stored) {
+				t.Fatalf("%d bytes: attempt %d overwrote the key file", size, attempt+1)
+			}
+		}
+	}
+}
+
 func TestLoadOrCreateKeyIsStableAndPrivate(t *testing.T) {
 	home := t.TempDir()
 	k1, err := crypt.LoadOrCreateKey(home)
