@@ -143,8 +143,12 @@ func runRulesAdd(args []string, stdio IO) int {
 	secretGroup := 0
 	if group != "" {
 		n, err := strconv.Atoi(group)
-		if err != nil {
-			return fail(stdio, name, 2, fmt.Errorf("--secret-group: %q — not an integer", group))
+		// Code boundary: a statically wrong argument is 2, while one that depends on
+		// the pattern (`--secret-group 5` with zero groups) stays 1 — it is caught by
+		// Compile, because the pattern itself decides. A negative value
+		// checked here, not in Compile: it is wrong regardless of the pattern.
+		if err != nil || n < 0 {
+			return fail(stdio, name, 2, fmt.Errorf("--secret-group: %q — expected a non-negative integer", group))
 		}
 		secretGroup = n
 	}

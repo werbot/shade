@@ -117,6 +117,10 @@ func TestRulesRejectsBadArgs(t *testing.T) {
 		// A boolean flag does not take a value in any form.
 		{"a value on a boolean flag", []string{"rules", "rm", "--name", "x", "--global=1"},
 			"--global"},
+		// A statically wrong argument is code 2. A value that depends on the pattern
+		// (a group outside the pattern) stays code 1: Compile catches it.
+		{"negative group", []string{"rules", "add", "--name", "x",
+			"--type", "HOST", "--pattern", "a", "--secret-group=-1"}, "--secret-group"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, _, stderr := runCLI(t, home, dir, tc.args, "")
