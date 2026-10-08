@@ -8,4 +8,9 @@ test:
 
 lint:
 	go vet ./...
-	gofmt -l .
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "gofmt: not formatted:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
