@@ -29,7 +29,10 @@ func (s *Store) ProjectForPath(ctx context.Context, dir string) (Project, error)
 	if dir == "" {
 		return Project{}, errors.New("project directory is not set")
 	}
-	root := repoRoot(ctx, dir)
+	root := canonicalPath(dir)
+	if top := gitToplevel(ctx, root); top != "" {
+		root = canonicalPath(top)
+	}
 	p := Project{RootPath: root, Name: filepath.Base(root)}
 	// name is written again with the same value: otherwise ON CONFLICT DO NOTHING
 	// would not return the row through RETURNING and a separate SELECT would be needed.
@@ -43,17 +46,33 @@ func (s *Store) ProjectForPath(ctx context.Context, dir string) (Project, error)
 	return p, nil
 }
 
-// repoRoot returns the top of the git repository for dir; if dir is not in
-// a repository or git is unavailable — dir itself.
-func repoRoot(ctx context.Context, dir string) string {
+// canonicalPath makes the path absolute and free of symlinks, falling back to
+// absolute, if the symlinks did not resolve (the directory may not exist yet).
+//
+// Without it the same directory, named in different ways, gives two rows in
+// projects and two counters, that is one value gets two placeholders:
+// git returns a path with resolved symlinks (`/private/tmp/...` on macOS), while
+// the passed string may be relative (".") or go through a symlink.
+func canonicalPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
+	}
+	return resolved
+}
+
+// gitToplevel returns the top of the git repository for dir, and an empty string
+// if dir is not in a repository or git is unavailable.
+func gitToplevel(ctx context.Context, dir string) string {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
-		return dir
+		return ""
 	}
-	if root := strings.TrimSpace(string(out)); root != "" {
-		return root
-	}
-	return dir
+	return strings.TrimSpace(string(out))
 }

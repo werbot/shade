@@ -31,12 +31,61 @@ func TestProjectForPathUsesGitRoot(t *testing.T) {
 
 func TestProjectForPathFallsBackToCwd(t *testing.T) {
 	dir := t.TempDir() // not a git repository
+	// The expectation is the canonical form: the path is stored without symlinks, otherwise one
+	// a directory named in different ways would create a second project (see below).
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p, err := s.ProjectForPath(ctx, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.RootPath != dir {
-		t.Fatalf("want fallback to %s, got %s", dir, p.RootPath)
+	if p.RootPath != want {
+		t.Fatalf("want fallback to %s, got %s", want, p.RootPath)
+	}
+}
+
+func TestProjectForPathCanonicalizesSameDir(t *testing.T) {
+	dir := t.TempDir()
+	want, err := s.ProjectForPath(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	// dir + "/sub/.." is built by concatenation, not filepath.Join: Join cleans the path
+	// on its own, and the test would stop checking anything.
+	for _, spelling := range []string{dir + "/sub/..", link} {
+		got, err := s.ProjectForPath(ctx, spelling)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != want.ID {
+			t.Fatalf("directory %q gave project %d, while %q gave %d: one value would get two placeholders",
+				spelling, got.ID, dir, want.ID)
+		}
+	}
+}
+
+func TestProjectForPathRelativeAndAbsoluteAgree(t *testing.T) {
+	dir := t.TempDir()
+	want, err := s.ProjectForPath(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	got, err := s.ProjectForPath(ctx, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != want.ID {
+		t.Fatalf(`"." from the directory gave project %d, while the absolute path gave %d`, got.ID, want.ID)
 	}
 }
 
