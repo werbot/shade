@@ -18,10 +18,9 @@ type Span struct {
 // Detect finds all rule matches in the text and returns non-overlapping
 // spans in the order they follow in the text.
 //
-// Rules are applied from specific to general (OrderIdx ascending), and this
-// same order serves as the priority on overlap: Merge walks the spans,
-// sorted stably by Start, so with an equal start the first one is — and
-// hence also the winner — the more specific rule goes.
+// Rules are applied from specific to general (OrderIdx ascending), and in
+// the same order their matches land in the slice, that is, the more specific
+// rule earlier in it, and, by the Merge contract, more important on overlap.
 func Detect(text string, rs []Rule) []Span {
 	ordered := slices.Clone(rs)
 	slices.SortStableFunc(ordered, func(a, b Rule) int { return a.OrderIdx - b.OrderIdx })
@@ -73,21 +72,54 @@ func hasKeyword(lower string, keywords []string) bool {
 	return false
 }
 
-// Merge collapses overlapping spans. The sort is stable by Start:
-// with equal bounds the priority is set by the order of the slice, that is the more
-// the specific rule. The winning span absorbs the overlapped one entirely — by
-// the bounds spans are not cut, otherwise in place of one secret there would be two
-// stubs.
+// Merge collapses overlapping spans.
+//
+// Input contract: the order of the slice sets the priority — earlier wins
+// (Detect puts spans in the order of the rules, from specific to general). The contract
+// output: spans do not overlap and go in ascending Start.
+//
+// The intersection of two spans gives the union of the bounds. The loser by priority
+// decides not which bytes stay open, but only which type
+// will get a placeholder: it cannot be dropped, because beyond the bounds
+// the winner there would remain bytes that the engine already deemed sensitive, and
+// the anonymizer is the last barrier before the model. Adjacent spans (Start == End
+// the previous one) do not overlap and are not merged.
 func Merge(spans []Span) []Span {
-	ordered := slices.Clone(spans)
-	slices.SortStableFunc(ordered, func(a, b Span) int { return a.Start - b.Start })
+	// The position in the input slice is the priority. The sort by Start
+	// is stable, so the order of spans equal by Start is preserved, but with different
+	// Start the original order is lost, and the priority has to be carried along.
+	type ranked struct {
+		span Span
+		pos  int
+	}
+	rankedSpans := make([]ranked, len(spans))
+	for i, s := range spans {
+		rankedSpans[i] = ranked{span: s, pos: i}
+	}
+	slices.SortStableFunc(rankedSpans, func(a, b ranked) int { return a.span.Start - b.span.Start })
 
-	var out []Span
-	for _, s := range ordered {
-		if n := len(out); n > 0 && s.Start < out[n-1].End {
+	var out []ranked
+	for _, r := range rankedSpans {
+		last := len(out) - 1
+		if last < 0 || r.span.Start >= out[last].span.End {
+			out = append(out, r)
 			continue
 		}
-		out = append(out, s)
+		winner := out[last]
+		// Start does not need to be extended: the sort guarantees it is already
+		// the minimum in the group.
+		if r.span.End > winner.span.End {
+			winner.span.End = r.span.End
+		}
+		if r.pos < winner.pos {
+			winner.pos, winner.span.Type, winner.span.Rule = r.pos, r.span.Type, r.span.Rule
+		}
+		out[last] = winner
 	}
-	return out
+
+	merged := make([]Span, len(out))
+	for i, r := range out {
+		merged[i] = r.span
+	}
+	return merged
 }

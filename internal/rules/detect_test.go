@@ -169,6 +169,33 @@ func TestDetectEntropyKindFiltersLowEntropy(t *testing.T) {
 	}
 }
 
+// An intersection must cover the union of the bounds: the loser by priority
+// span is not dropped, otherwise its non-overlapping bytes go to the model
+// unmasked.
+func TestMergeUnionsOverlappingBounds(t *testing.T) {
+	specific := rules.Span{Start: 2, End: 10, Type: "TOKEN", Rule: "specific"}
+	generic := rules.Span{Start: 0, End: 4, Type: "SECRET", Rule: "generic"}
+	got := rules.Merge([]rules.Span{specific, generic})
+	if len(got) != 1 || got[0].Start != 0 || got[0].End != 10 {
+		t.Fatalf("the bounds must be the union [0,10): %+v", got)
+	}
+	if got[0].Type != "TOKEN" || got[0].Rule != "specific" {
+		t.Fatalf("the more specific span sets the type: %+v", got[0])
+	}
+}
+
+// Equal Start, the specific rule is shorter than the general one: the tail must also be
+// covered, and the type must stay with the specific rule.
+func TestMergeCoversTailOfBroaderRule(t *testing.T) {
+	generic, _ := rules.Compile(rules.Spec{ID: "generic", Type: "SECRET", Kind: "regex", Pattern: `\w+`, Order: 200})
+	specific, _ := rules.Compile(rules.Spec{ID: "specific", Type: "TOKEN", Kind: "regex", Pattern: `AKIA[0-9A-Z]{4}`, Order: 10})
+	text := "AKIA1234ZZZZZZZZZZ"
+	spans := rules.Detect(text, []rules.Rule{generic, specific})
+	if len(spans) != 1 || spans[0].Start != 0 || spans[0].End != len(text) || spans[0].Type != "TOKEN" {
+		t.Fatalf("the tail of length %d must be covered, and the type must be TOKEN: %+v", len(text), spans)
+	}
+}
+
 // Detect is a pure function of the set passed in: it does not look at Enabled.
 // The filter of disabled rules lives in RulesForProject, otherwise `shade rules test`
 // (Task 13) could not check a rule before enabling it.
