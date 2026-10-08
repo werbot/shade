@@ -6,38 +6,54 @@ import (
 )
 
 // Guard hides already existing placeholders from the anonymization rules: on input
-// the tool output or the dialogue history, on output text without tokens and the function
-// of returning them back. Both are hidden:
-// otherwise a repeated run of the rules would turn <EMAIL_1> into <EMAIL_2>.
+// the tool output or the dialogue history, on output text without tokens, the ranges
+// the substitutions in it and the function returning the tokens back. Both are hidden:
+// canonical tokens and deformed ones — otherwise a repeated run of the rules
+// would turn <EMAIL_1> into <EMAIL_2>.
 //
-// If there are no placeholders — the common case — the source string and
-// the identity function, without a single allocation.
-func Guard(text string) (masked string, restore func(string) string) {
+// The substitution is not opaque to the rules, and that is exactly why hidden is needed: NUL
+// is allowed where `<` is forbidden (the value class of py_repr starts with
+// [^"'\\\n$%<{\[]), so a rule span can cover it. The caller must
+// trim the spans by hidden — otherwise the substitution will disappear from the text and restore will
+// will no longer find it, and the original placeholder will be lost forever.
+//
+// The flip side of the mask: it not only hides the token, but also makes findable
+// a secret next to it. `password="<EMAIL_1>AbCdEf0123456789"` on the raw text is not
+// is caught by nothing — the value starts with `<` — but after the substitution a NUL in place of
+// `<` the value class lets through.
+//
+// If there are no placeholders — the common case — the source string, an empty
+// hidden and the identity function, without a single allocation.
+func Guard(text string) (masked string, hidden [][2]int, restore func(string) string) {
 	toks := FindNormalized(text)
 	if len(toks) == 0 {
-		return text, identity
+		return text, nil, identity
 	}
 
 	var b strings.Builder
 	b.Grow(len(text) + 8*len(toks))
 	raws := make([]string, 0, len(toks))
+	hidden = make([][2]int, 0, len(toks))
 	prev := 0
 	for _, tok := range toks {
 		writeEscaped(&b, text[prev:tok.Start])
+		start := b.Len()
 		b.WriteString(sentinel(len(raws)))
+		hidden = append(hidden, [2]int{start, b.Len()})
 		raws = append(raws, tok.Raw)
 		prev = tok.End
 	}
 	writeEscaped(&b, text[prev:])
-	return b.String(), func(s string) string { return unguard(s, raws) }
+	return b.String(), hidden, func(s string) string { return unguard(s, raws) }
 }
 
 // identity — a replacement for a guard that has nothing to hide.
 func identity(s string) string { return s }
 
 // sentinel builds the service substitution \x00S<n>\x00. NUL is chosen because
-// it is absent in ordinary text: the rules will not parse the substitution as a phone or
-// a ticket number.
+// it is absent in ordinary text — but the substitution does not become opaque to the rules
+// becomes so: a value class like [^"'\\\n$%<{\[] lets NUL through. That is why Guard
+// returns the bounds of the substitutions, and the caller trims by them.
 func sentinel(n int) string {
 	return "\x00S" + strconv.Itoa(n) + "\x00"
 }

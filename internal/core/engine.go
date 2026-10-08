@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -34,6 +35,8 @@ type Result struct {
 	// Spans — the fragments found. The boundaries are byte offsets in the text after
 	// Guard, that is, in the one that went to Detect, not in the original: if on
 	// the input had placeholders of its own, their length in these coordinates is different.
+	// A span that covered a Guard substitution is already clipped to its boundaries here, and
+	// hence one rule can give several adjacent spans.
 	Spans []rules.Span
 }
 
@@ -55,9 +58,9 @@ func New(ctx context.Context, home, adapter string) (*Engine, error) {
 	e, err := build(ctx, s, adapter)
 	if err != nil {
 		// Otherwise the database connection would be left hanging: New returned an error, but
-		// and the caller has no way to close the store.
-		s.Close()
-		return nil, err
+		// the caller has no way to close the store. The close error is not lost —
+		// is joined with the original one, which names the real cause.
+		return nil, errors.Join(err, s.Close())
 	}
 	return e, nil
 }

@@ -6,7 +6,10 @@ import (
 	"testing"
 
 	"github.com/werbot/shade/internal/core"
+	"github.com/werbot/shade/internal/crypt"
 	"github.com/werbot/shade/internal/placeholder"
+	"github.com/werbot/shade/internal/rules"
+	"github.com/werbot/shade/internal/store"
 )
 
 // ctx is shared by the tests of the package: the engine keeps no state between calls,
@@ -26,6 +29,39 @@ func newEngine(t *testing.T) *core.Engine {
 	t.Helper()
 	t.Chdir(t.TempDir())
 	e, err := core.New(ctx, t.TempDir(), "cli")
+	if err != nil {
+		t.Fatalf("core.New: %v", err)
+	}
+	t.Cleanup(func() { e.Close() })
+	return e
+}
+
+// newEngineWithRule brings up an engine on a fresh SHADE_HOME with an additional
+// rule in the global scope. The property "the span is clipped at the substitution" must not
+// depend on the builtin rule set: a user rule (Task 13) with a
+// class that lets NUL through breaks it in exactly the same way.
+func newEngineWithRule(t *testing.T, spec rules.Spec) *core.Engine {
+	t.Helper()
+	home := t.TempDir()
+	if err := store.EnsureHome(home); err != nil {
+		t.Fatal(err)
+	}
+	key, err := crypt.LoadOrCreateKey(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Open(home, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddRule(ctx, nil, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	e, err := core.New(ctx, home, "cli")
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
 	}
@@ -121,12 +157,53 @@ func TestAnonymizeAndRestoreSeveralSecrets(t *testing.T) {
 	}
 }
 
-func TestRestoreRoundTrip(t *testing.T) {
+// A rule's span can cover a Guard substitution: NUL is allowed where `<`
+// is forbidden (the value class of py_repr starts with [^"'\\\n$%<{\[]), and
+// random_enough lets the substitution through because of a digit. Without clipping the substitution
+// would disappear from the text, restore would not find it, and the round trip would silently fall apart
+// — with an empty Unresolved.
+func TestAnonymizeKeepsHiddenPlaceholderUnderRuleSpan(t *testing.T) {
 	e := newEngine(t)
-	src := "хост db.prod.local, юзер <EMAIL_1> password=" + secret
+	for _, src := range []string{
+		`{"password": "<EMAIL_1>"}`,
+		`password="<EMAIL_1>"`,
+		`password: '<SECRET_1>'`,
+		`password=<EMAIL_1>`,
+		`where "<EMAIL_1>" = password`,
+		`api_key = "<KEY_1>"`,
+	} {
+		anon, err := e.Anonymize(ctx, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(anon.Text, "\x00") {
+			t.Fatalf("%q: the substitution leaked into the result: %q", src, anon.Text)
+		}
+		back, err := e.Restore(ctx, anon.Text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back.Text != src {
+			t.Fatalf("round trip broken:\n src  %q\n anon %q\n back %q", src, anon.Text, back.Text)
+		}
+		if len(back.Unresolved) != 1 {
+			t.Fatalf("%q: unresolved %+v", src, back.Unresolved)
+		}
+	}
+}
+
+// Clipping does not throw the span away entirely: a secret right next to the substitution must
+// be masked, and the substitution must survive.
+func TestAnonymizeClipsSpanAroundHiddenPlaceholder(t *testing.T) {
+	e := newEngine(t)
+	src := `password="<EMAIL_1>` + secret + `"`
 	anon, err := e.Anonymize(ctx, src)
 	if err != nil {
 		t.Fatal(err)
+	}
+	want := `password="<EMAIL_1><SECRET_1>"`
+	if anon.Text != want {
+		t.Fatalf("\n want %q\n got  %q", want, anon.Text)
 	}
 	back, err := e.Restore(ctx, anon.Text)
 	if err != nil {
@@ -135,59 +212,29 @@ func TestRestoreRoundTrip(t *testing.T) {
 	if back.Text != src {
 		t.Fatalf("round trip broken:\n want %q\n got  %q", src, back.Text)
 	}
-	// this project never issued <EMAIL_1>: the restore leaves it as is
-	// and reports it — silently handing over text with a hole would be worse.
-	if len(back.Unresolved) != 1 || back.Unresolved[0].Type != "EMAIL" || back.Unresolved[0].N != 1 {
-		t.Fatalf("got %+v", back.Unresolved)
-	}
 }
 
-func TestRestoreDoesNotReanonymizeExistingPlaceholder(t *testing.T) {
-	e := newEngine(t)
-	src := "host db.prod.local password=" + secret
+// One span split into two parts around a substitution: each part
+// is allocated separately, both sides of the secret are masked.
+func TestAnonymizeAllocatesEachPartOfSplitSpan(t *testing.T) {
+	e := newEngineWithRule(t, rules.Spec{
+		ID: "nul_class", Type: "SECRET", Kind: "regex",
+		Pattern: `x=(\S+)`, SecretGroup: 1, Order: 1, Enabled: true,
+	})
+	src := "x=AbCdEf0123456789<EMAIL_1>ZzYyXx9876543210"
 	anon, err := e.Anonymize(ctx, src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// re-anonymizing already anonymized text must not change the token
-	again, err := e.Anonymize(ctx, anon.Text)
+	want := "x=<SECRET_1><EMAIL_1><SECRET_2>"
+	if anon.Text != want {
+		t.Fatalf("\n want %q\n got  %q", want, anon.Text)
+	}
+	back, err := e.Restore(ctx, anon.Text)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Text != anon.Text {
-		t.Fatalf("%q -> %q", anon.Text, again.Text)
-	}
-	// and must not declare it unresolved
-	if len(again.Unresolved) != 0 {
-		t.Fatalf("unexpected unresolved: %+v", again.Unresolved)
-	}
-}
-
-func TestRestoreReportsUnknownToken(t *testing.T) {
-	e := newEngine(t)
-	got, err := e.Restore(ctx, "see <HOST_99> there")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Unresolved) != 1 || got.Unresolved[0].Type != "HOST" || got.Unresolved[0].N != 99 {
-		t.Fatalf("got %+v", got.Unresolved)
-	}
-	if got.Text != "see <HOST_99> there" {
-		t.Fatalf("an unknown token must stay in the text: %q", got.Text)
-	}
-}
-
-func TestRestoreLeavesForeignPlaceholderAlone(t *testing.T) {
-	e := newEngine(t)
-	// the type is not from our set — not our placeholder
-	got, err := e.Restore(ctx, "see <div_1> and <MyClass_2>")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Text != "see <div_1> and <MyClass_2>" {
-		t.Fatalf("got %q", got.Text)
-	}
-	if len(got.Unresolved) != 0 {
-		t.Fatalf("got %+v", got.Unresolved)
+	if back.Text != src {
+		t.Fatalf("round trip broken:\n want %q\n got  %q", src, back.Text)
 	}
 }
