@@ -23,8 +23,9 @@ func init() {
 //
 // The check goes through the engine, not through stat: readiness is the ability
 // to open the database and read the rules of the project, not the presence of files on disk.
-// The side effect is the same as with any other command: the missing key and database
-// are created, so the report describes the state after the check.
+// Nothing may be created in the process: the key and the database are exactly what the user
+// came to ask about, and a key created along the way would erase the difference between "configured"
+// and "was just configured".
 func runDoctor(_ []string, stdio IO) int {
 	home := store.Home()
 	status, err := homeStatus(home)
@@ -34,12 +35,15 @@ func runDoctor(_ []string, stdio IO) int {
 	}
 	fmt.Fprintf(stdio.Out, "directory: %s — %s\n", home, status)
 
-	// A key that cannot be read will be filtered out by openEngine below: a separate check
-	// errors here would only duplicate its refusal.
-	keyPath := filepath.Join(home, "key")
-	keyState := "ready"
-	if _, err := os.Stat(keyPath); errors.Is(err, fs.ErrNotExist) {
-		keyState = "created"
+	// The presence of the key is the boundary of the check: the key and the database are created by one call
+	// core.New, so "there is no key" also means "there is no database". Going further is not allowed —
+	// the check would create what it checks, and telling a configured environment
+	// from a just-configured one would become impossible.
+	if _, err := os.Stat(filepath.Join(home, "key")); errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintln(stdio.Out, "key: missing, it will be created on first run")
+		fmt.Fprintln(stdio.Out, "database: not created")
+		fmt.Fprintln(stdio.Out, "rules: unknown, the database is not created")
+		return 0
 	}
 
 	wd, err := os.Getwd()
@@ -54,7 +58,7 @@ func runDoctor(_ []string, stdio IO) int {
 	}
 	defer e.Close()
 
-	fmt.Fprintf(stdio.Out, "key: %s\n", keyState)
+	fmt.Fprintln(stdio.Out, "key: readable")
 	fmt.Fprintf(stdio.Out, "database: %s\n", filepath.Join(home, "shade.db"))
 	fmt.Fprintf(stdio.Out, "project: %s\n", e.RootPath())
 	fmt.Fprintf(stdio.Out, "rules: %d active\n", e.RuleCount())

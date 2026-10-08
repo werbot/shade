@@ -84,29 +84,50 @@ func TestDispatchWithoutArgsPrintsUsage(t *testing.T) {
 }
 
 func TestDoctor(t *testing.T) {
-	t.Run("working directory", func(t *testing.T) {
-		t.Setenv("SHADE_HOME", t.TempDir())
+	t.Run("clean environment", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SHADE_HOME", home)
 		var out, errb bytes.Buffer
 		if code := runDoctor(nil, IO{Out: &out, Err: &errb}); code != 0 {
 			t.Fatalf("code=%d, err=%q", code, errb.String())
 		}
-		// On a clean directory the check itself creates the key and the database, so
-		// the report describes an environment that is already in place, not its absence.
-		for _, want := range []string{"key: created", "database: ", "project: ", "rules: "} {
+		for _, want := range []string{"key: missing", "database: not created", "rules: unknown"} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("the report has no %q: %q", want, out.String())
+			}
+		}
+		// The check must not create anything: otherwise it answers itself the
+		// question it was asked, and "configured" is indistinguishable from "got configured
+		// just now". The absence of a row in the output does not prove this — we look
+		// at the state directory.
+		entries, err := os.ReadDir(home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			t.Fatalf("doctor created in the state directory: %v", names)
+		}
+	})
+	t.Run("ready environment", func(t *testing.T) {
+		home, dir := t.TempDir(), gitDir(t)
+		if code, _, stderr := runCLI(t, home, dir, []string{"anon"}, "текст без секретов\n"); code != 0 {
+			t.Fatalf("setup: code=%d, err=%q", code, stderr)
+		}
+		var out, errb bytes.Buffer
+		if code := runDoctor(nil, IO{Out: &out, Err: &errb}); code != 0 {
+			t.Fatalf("code=%d, err=%q", code, errb.String())
+		}
+		for _, want := range []string{"key: readable", "database: ", "project: ", "rules: "} {
 			if !strings.Contains(out.String(), want) {
 				t.Fatalf("the report has no %q: %q", want, out.String())
 			}
 		}
 		if strings.Contains(out.String(), "rules: 0 active") {
 			t.Fatalf("the builtin rule set was not seeded: %q", out.String())
-		}
-
-		out.Reset()
-		if code := runDoctor(nil, IO{Out: &out, Err: &errb}); code != 0 {
-			t.Fatalf("second run: code=%d, err=%q", code, errb.String())
-		}
-		if !strings.Contains(out.String(), "key: ready") {
-			t.Fatalf("the key was not reused: %q", out.String())
 		}
 	})
 	t.Run("directory is unavailable", func(t *testing.T) {
