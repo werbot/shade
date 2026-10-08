@@ -40,7 +40,12 @@ func Detect(text string, rs []Rule) []Span {
 				continue
 			}
 			matched := text[start:end]
-			if r.Kind == "entropy" && Shannon(matched) < r.EntropyMin {
+			// The entropy threshold is EntropyMin, not the Kind label: in gitleaks
+			// entropy = 0.0 means «no filter» (that is exactly EntropyMin == 0), and a
+			// regex with a threshold on top of it is an ordinary case, not a separate
+			// rule. Kind == "entropy" stays a label and passes Compile as
+			// before. Gating by Kind would again make a threshold from someone else's config inert.
+			if r.EntropyMin > 0 && Shannon(matched) < r.EntropyMin {
 				continue
 			}
 			if !Validate(r.Validator, matched) {

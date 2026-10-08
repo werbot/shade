@@ -46,10 +46,11 @@ type gitleaksAllowlist struct {
 	Regex   string   `toml:"regex"`
 }
 
-// patterns returns the allowlist regexes as a fresh slice: it goes into a Spec that
-// the caller is free to change, and a slice from parsed TOML does not belong to it.
+// patterns returns the allowlist regexes. The slice goes to the caller as is, without
+// a copy: nobody mutates it, Compile keeps it the same way as
+// Keywords with Pattern.
 func (a gitleaksAllowlist) patterns() []string {
-	out := append([]string(nil), a.Regexes...)
+	out := a.Regexes
 	if a.Regex != "" {
 		out = append(out, a.Regex)
 	}
@@ -59,8 +60,9 @@ func (a gitleaksAllowlist) patterns() []string {
 // spec translates a gitleaks rule into an engine spec.
 //
 // Kind is always regex: in gitleaks entropy is a threshold filter on top of a
-// a regex, not a separate rule kind, so it goes into EntropyMin. Our
-// Kind == "entropy" is about a rule with no regex at all.
+// a regex, not a separate rule kind, so it goes into EntropyMin, by
+// which the engine applies the filter (detect.go). Our Kind == "entropy" is about
+// a rule with no regex at all.
 //
 // Order 0 and Builtin false: builtin rules take order from 10, so
 // an imported rule is applied before a builtin one — the user's rule
@@ -116,6 +118,14 @@ func ImportTOML(r io.Reader) (imported []Spec, skipped []ImportError, err error)
 				RuleID: fmt.Sprintf("rules[%d]", i),
 				Reason: "the rule has no id",
 			})
+			continue
+		}
+		// An empty regex is a rule that can never fire: regexp.Compile("")
+		// gives a zero-width match, and bounds drops an empty group, so
+		// that the rule never finds anything. That is what a path-only rule
+		// gitleaks: the importer drops the path field, and the rule has no regex.
+		if g.Regex == "" {
+			skipped = append(skipped, ImportError{RuleID: g.ID, Reason: "no regex"})
 			continue
 		}
 		spec := g.spec()

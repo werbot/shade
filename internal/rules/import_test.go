@@ -41,8 +41,8 @@ keywords = ["akia"]
 entropy = 0.0
 `
 	imported, skipped, err := rules.ImportTOML(strings.NewReader(td))
-	if err != nil || len(skipped) != 0 {
-		t.Fatalf("err=%v skipped=%+v", err, skipped)
+	if err != nil || len(skipped) != 0 || len(imported) != 1 {
+		t.Fatalf("err=%v imported=%+v skipped=%+v", err, imported, skipped)
 	}
 	if imported[0].SecretGroup != 1 || imported[0].Keywords[0] != "akia" {
 		t.Fatalf("got %+v", imported[0])
@@ -60,8 +60,8 @@ regex = '''x([0-9]+)'''
 secretGroup = 1
 `
 	imported, skipped, err := rules.ImportTOML(strings.NewReader(td))
-	if err != nil || len(skipped) != 0 {
-		t.Fatalf("err=%v skipped=%+v", err, skipped)
+	if err != nil || len(skipped) != 0 || len(imported) != 1 {
+		t.Fatalf("err=%v imported=%+v skipped=%+v", err, imported, skipped)
 	}
 	got := imported[0]
 	if got.Type != "SECRET" || got.Kind != "regex" || got.Order != 0 || !got.Enabled || got.Builtin {
@@ -126,9 +126,87 @@ regexes = ["3333"]
 		t.Fatalf("got %+v", imported)
 	}
 	for _, s := range imported {
-		if !slices.Equal(s.Allowlist, want[s.ID]) {
-			t.Errorf("%s: allowlist = %v, want %v", s.ID, s.Allowlist, want[s.ID])
+		// The presence of the key is mandatory: want[unknown ID] gives nil, and
+		// slices.Equal(nil, nil) — true, and a rule with someone else's name would pass
+		// the check on an empty allowlist.
+		w, ok := want[s.ID]
+		if !ok {
+			t.Fatalf("unexpected rule %q", s.ID)
 		}
+		if !slices.Equal(s.Allowlist, w) {
+			t.Errorf("%s: allowlist = %v, want %v", s.ID, s.Allowlist, w)
+		}
+	}
+}
+
+// TestImportNamesRuleWithoutIDByPosition — a rule without an id has no name at all, and
+// the report must name every skipped rule: the position in the file is the only
+// available identifier.
+func TestImportNamesRuleWithoutIDByPosition(t *testing.T) {
+	td := `[[rules]]
+regex = '''x([0-9]+)'''
+secretGroup = 1
+`
+	imported, skipped, err := rules.ImportTOML(strings.NewReader(td))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imported) != 0 || len(skipped) != 1 {
+		t.Fatalf("imported=%+v skipped=%+v", imported, skipped)
+	}
+	if skipped[0].RuleID != "rules[0]" || skipped[0].Reason == "" {
+		t.Fatalf("got %+v", skipped[0])
+	}
+}
+
+// TestImportReportsRuleWithoutRegex — a gitleaks path-only rule: it has no
+// it has none, the importer drops the path field. An empty pattern compiles into
+// a zero-width match that bounds drops, that is, the rule
+// never finds anything — that is the same class as a secret group outside the pattern.
+func TestImportReportsRuleWithoutRegex(t *testing.T) {
+	td := `[[rules]]
+id = "path-only"
+path = '''\.pem$'''
+`
+	imported, skipped, err := rules.ImportTOML(strings.NewReader(td))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imported) != 0 || len(skipped) != 1 {
+		t.Fatalf("imported=%+v skipped=%+v", imported, skipped)
+	}
+	if skipped[0].RuleID != "path-only" || skipped[0].Reason == "" {
+		t.Fatalf("got %+v", skipped[0])
+	}
+}
+
+// TestImportEntropyThresholdFiltersMatches — the entropy threshold from gitleaks must
+// work for an imported rule. Its Kind is "regex" (in gitleaks entropy is
+// a threshold on top of the regex match, not a separate rule kind), so a gate by
+// Kind would make the threshold inert: the rule would match everything the regex caught.
+func TestImportEntropyThresholdFiltersMatches(t *testing.T) {
+	td := `[[rules]]
+id = "noisy"
+regex = '''([a-z0-9]{8})'''
+secretGroup = 1
+entropy = 2.5
+`
+	imported, skipped, err := rules.ImportTOML(strings.NewReader(td))
+	if err != nil || len(skipped) != 0 || len(imported) != 1 {
+		t.Fatalf("err=%v imported=%+v skipped=%+v", err, imported, skipped)
+	}
+	r, err := rules.Compile(imported[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "aaaaaaa1" has entropy 0.54 bits, "b7k2m9qz" has 3.0.
+	text := "aaaaaaa1 b7k2m9qz"
+	spans := rules.Detect(text, []rules.Rule{r})
+	if len(spans) != 1 {
+		t.Fatalf("want only the high-entropy match, got %+v", spans)
+	}
+	if got := text[spans[0].Start:spans[0].End]; got != "b7k2m9qz" {
+		t.Fatalf("got %q", got)
 	}
 }
 
