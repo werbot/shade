@@ -92,19 +92,32 @@ func TestUnknownKeysAreIgnored(t *testing.T) {
 	}
 }
 
-// TestEmptyHomeSkipsGlobalLayer — home comes from store.Home() and may be
-// empty if the home directory is not defined. An empty path is not the file "config.toml"
-// in the current directory.
-func TestEmptyHomeSkipsGlobalLayer(t *testing.T) {
-	root := t.TempDir()
-	write(t, filepath.Join(root, ".shade.toml"), "entities_ttl = \"7d\"\n")
+// TestEmptyDirsSkipLayerInsteadOfReadingCwd — an empty layer directory (home comes
+// from store.Home() and may be empty) must skip the layer, and not turn into
+// a relative path: filepath.Join("", name) would point at the current directory, and
+// a config from cwd would be picked up as a foreign one. The test is discriminating — both layer files
+// are known to lie in cwd, so removing the guard fails exactly these checks, and not
+// hits ErrNotExist, as it would in the package directory.
+func TestEmptyDirsSkipLayerInsteadOfReadingCwd(t *testing.T) {
+	cwd := t.TempDir()
+	write(t, filepath.Join(cwd, "config.toml"), "fail_policy = \"fail_open_log\"\n")
+	write(t, filepath.Join(cwd, ".shade.toml"), "entities_ttl = \"7d\"\n")
+	t.Chdir(cwd)
 
-	c, err := config.Load("", root)
+	c, err := config.Load("", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.EntitiesTTL != "7d" {
-		t.Fatalf("got %q", c.EntitiesTTL)
+	if c.FailPolicy != "fail_closed" {
+		t.Fatalf("empty home must not read cwd/config.toml: %q", c.FailPolicy)
+	}
+
+	c, err = config.Load(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EntitiesTTL != "90d" {
+		t.Fatalf("empty project root must not read cwd/.shade.toml: %q", c.EntitiesTTL)
 	}
 }
 
