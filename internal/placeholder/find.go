@@ -8,10 +8,6 @@ import (
 	"unicode/utf8"
 )
 
-// findRe — the canonical form of a token: <TYPE_N>, N is a positive integer with no
-// leading zeros.
-var findRe = regexp.MustCompile(`<(` + typesAlt + `)_([1-9][0-9]*)>`)
-
 // normalizedRe — the six deformations from the spec, item 7: HTML-escape, fullwidth
 // brackets, spaces and a newline inside the token, lowercase, truncation at
 // max_tokens (there is no closing bracket — the end of the token is marked by a word boundary).
@@ -19,17 +15,17 @@ var findRe = regexp.MustCompile(`<(` + typesAlt + `)_([1-9][0-9]*)>`)
 // of a truncated token would end up in Raw. Only the type is case-insensitive: the brackets and
 // the prefixes of HTML entities must match exactly.
 //
+// The canonical form (the first tier of the spec) is a special case of this regexp, not
+// a separate search: a separate strict regexp lived here for the sake of an "exact
+// match", but no production caller called it, and its own
+// guarantee (a closing bracket is mandatory) would contradict truncation at
+// max_tokens. Tiers 1–2 are collapsed into a single pass.
+//
 // The third group is that very word boundary: it is empty when the token closed on \b,
 // and does not participate when the closing bracket is in place. By it FindNormalized
 // distinguishes truncation at max_tokens from a junction with a letter (see dropGlued).
 var normalizedRe = regexp.MustCompile(
 	`(?:&lt;|＜|<)\s*((?i:` + typesAlt + `))\s*_\s*([1-9][0-9]*)(?:\s*(?:&gt;|＞|>)|(\b))`)
-
-// Find looks only for the canonical form of a token — the first tier of restoration,
-// an exact match without deformations.
-func Find(text string) []Token {
-	return toTokens(text, findRe.FindAllStringSubmatchIndex(text, -1))
-}
 
 // FindNormalized looks for tokens, surviving the deformations of the model. The match bounds are
 // positions in the source text (the regexp runs over it too), so the substitution
@@ -66,8 +62,7 @@ func gluedToWord(text string, end int) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
-// toTokens parses the results of both regexps: they have two groups each — type
-// and number.
+// toTokens parses the search results: the regexp has two groups — type and number.
 func toTokens(text string, locs [][]int) []Token {
 	if len(locs) == 0 {
 		return nil

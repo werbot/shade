@@ -6,21 +6,23 @@ import (
 	"github.com/werbot/shade/internal/placeholder"
 )
 
-func TestFindAcceptsKnownTypesOnly(t *testing.T) {
-	got := placeholder.Find("см. <EMAIL_1> и <div_1> и <MyClass_2>")
+// The canonical form is a special case of the normalized search, so the three
+// properties of the former strict Find are checked here on FindNormalized.
+func TestFindNormalizedAcceptsKnownTypesOnly(t *testing.T) {
+	got := placeholder.FindNormalized("см. <EMAIL_1> и <div_1> и <MyClass_2>")
 	if len(got) != 1 || got[0].Type != "EMAIL" || got[0].N != 1 {
 		t.Fatalf("got %+v", got)
 	}
 }
 
-func TestFindRejectsLeadingZeros(t *testing.T) {
-	if got := placeholder.Find("<HOST_01>"); len(got) != 0 {
+func TestFindNormalizedRejectsLeadingZeros(t *testing.T) {
+	if got := placeholder.FindNormalized("<HOST_01>"); len(got) != 0 {
 		t.Fatalf("got %+v", got)
 	}
 }
 
-func TestFindDoesNotMatchSubstringPlaceholder(t *testing.T) {
-	got := placeholder.Find("a <SECRET_11> b")
+func TestFindNormalizedMatchesWholeToken(t *testing.T) {
+	got := placeholder.FindNormalized("a <SECRET_11> b")
 	if len(got) != 1 || got[0].N != 11 {
 		t.Fatalf("must match <SECRET_11> whole, got %+v", got)
 	}
@@ -135,26 +137,12 @@ func TestFindNormalizedKeepsTruncationAtBoundary(t *testing.T) {
 	}
 }
 
-// TestFindStaysCanonicalNearCyrillic: the canonical regexp requires a closing
-// brackets and does not depend on the word boundary — the change must not cause a regression.
-func TestFindStaysCanonicalNearCyrillic(t *testing.T) {
-	if got := placeholder.Find("<KEY_1"); len(got) != 0 {
-		t.Fatalf("without a closing bracket: %+v", got)
-	}
-	got := placeholder.Find("файл <KEY_1>яяя")
+// TestFindNormalizedKeepsClosedTokenNearCyrillic: the closing bracket closes
+// token, and Cyrillic right after it is no longer a gluing: dropGlued only concerns
+// truncation at max_tokens, where the token is closed by a word boundary.
+func TestFindNormalizedKeepsClosedTokenNearCyrillic(t *testing.T) {
+	got := placeholder.FindNormalized("файл <KEY_1>яяя")
 	if len(got) != 1 || got[0].Raw != "<KEY_1>" {
 		t.Fatalf("got %+v", got)
-	}
-}
-
-// TestFindOffsetsAreBytes checks the same for the canonical search.
-func TestFindOffsetsAreBytes(t *testing.T) {
-	text := "тут <KEY_7> и всё"
-	got := placeholder.Find(text)
-	if len(got) != 1 {
-		t.Fatalf("got %+v", got)
-	}
-	if s := text[got[0].Start:got[0].End]; s != "<KEY_7>" {
-		t.Fatalf("text[%d:%d] = %q", got[0].Start, got[0].End, s)
 	}
 }

@@ -79,7 +79,7 @@ func TestAnonymizeReplacesAndIsStable(t *testing.T) {
 	if len(r1.Spans) != 1 {
 		t.Fatalf("expected one span, got %+v", r1.Spans)
 	}
-	toks := placeholder.Find(r1.Text)
+	toks := placeholder.FindNormalized(r1.Text)
 	if len(toks) != 1 || toks[0].Type != r1.Spans[0].Type {
 		t.Fatalf("the placeholder is not where the span is: %q, spans %+v", r1.Text, r1.Spans)
 	}
