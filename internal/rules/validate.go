@@ -1,15 +1,19 @@
 package rules
 
-import "net/netip"
+import (
+	"net/netip"
+	"strings"
+)
 
 // validators is the registry of match validators by name: the builtin guards,
 // referred to by Spec.Validator. Without them a rule like «card number»
 // cuts with a single pattern everything that looks like a number.
 var validators = map[string]func(string) bool{
-	"luhn":        luhn,
-	"ip_global":   ipv4Global,
-	"ipv6_global": ipv6Global,
-	"phone":       phone,
+	"luhn":          luhn,
+	"ip_global":     ipv4Global,
+	"ipv6_global":   ipv6Global,
+	"phone":         phone,
+	"random_enough": randomEnough,
 }
 
 // Validate checks a match with the validator of the rule. An empty name means
@@ -95,4 +99,12 @@ func phone(s string) bool {
 		}
 	}
 	return n >= 8 && n <= 15
+}
+
+// randomEnough is a port of _random_enough from redact_output.py: a value looks like a
+// secret if it is long or contains a digit. The «key = value» rules
+// cut only such values: `token: string` and `PASSWORD=$DB_PASSWORD` are
+// ordinary code, not a secret, and without this check the anonymizer would cut them.
+func randomEnough(s string) bool {
+	return len(s) >= 16 || strings.ContainsAny(s, "0123456789")
 }

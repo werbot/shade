@@ -75,3 +75,21 @@ func TestValidatePhone(t *testing.T) {
 		}
 	}
 }
+
+// random_enough is a port of _random_enough: a value is secret if it is long or
+// contains a digit. All the «key = value» rules rest on it: without it
+// `token: string` and `PASSWORD=$DB_PASSWORD` would be cut as secrets.
+func TestValidateRandomEnough(t *testing.T) {
+	yes := []string{"Xk7pQ2mZr9Tv", "Ab12Cd34Ef56Gh78Ij90", "a1"}
+	for _, s := range yes {
+		if !rules.Validate("random_enough", s) {
+			t.Fatalf("%q must pass", s)
+		}
+	}
+	no := []string{"placeholder", "$DB_PASSWORD", "string", ""}
+	for _, s := range no {
+		if rules.Validate("random_enough", s) {
+			t.Fatalf("%q must not pass", s)
+		}
+	}
+}
