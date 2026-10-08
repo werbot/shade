@@ -1,12 +1,39 @@
 package store_test
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/werbot/shade/internal/store"
 )
+
+// ctx and s are shared by the tests of the package: project(t) creates in this store
+// a separate project for every test, so the counters do not intersect.
+var (
+	ctx = context.Background()
+	s   *store.Store
+)
+
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "shade-store-")
+	if err != nil {
+		panic(err)
+	}
+	s, err = store.Open(home, testKey())
+	if err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	s.Close()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
+
+// testKey is a deterministic encryption key for the tests of the package.
+func testKey() []byte { return bytes.Repeat([]byte{7}, 32) }
 
 func TestOpenCreatesSchema(t *testing.T) {
 	s := openTemp(t)
@@ -24,12 +51,12 @@ func TestOpenCreatesSchema(t *testing.T) {
 
 func TestOpenTwiceIsIdempotent(t *testing.T) {
 	home := t.TempDir()
-	s1, err := store.Open(home)
+	s1, err := store.Open(home, testKey())
 	if err != nil {
 		t.Fatal(err)
 	}
 	s1.Close()
-	s2, err := store.Open(home)
+	s2, err := store.Open(home, testKey())
 	if err != nil {
 		t.Fatalf("second open must not fail: %v", err)
 	}
@@ -40,7 +67,7 @@ func TestOpenTwiceIsIdempotent(t *testing.T) {
 // when the test finishes.
 func openTemp(t *testing.T) *store.Store {
 	t.Helper()
-	s, err := store.Open(t.TempDir())
+	s, err := store.Open(t.TempDir(), testKey())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,5 +117,35 @@ func TestOpenEnablesPragmas(t *testing.T) {
 	}
 	if fk != 1 {
 		t.Fatalf("foreign_keys=%d, want 1", fk)
+	}
+}
+
+func TestEnsureHomeCreatesDirectory(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "nested", "shade")
+	if err := store.EnsureHome(home); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatal("not a directory")
+	}
+	// idempotency: a repeated call is not an error
+	if err := store.EnsureHome(home); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenCreatesHomeDirectory(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "nested", "shade")
+	s, err := store.Open(home, testKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if info, err := os.Stat(home); err != nil || !info.IsDir() {
+		t.Fatalf("Open must create the directory %s: %v", home, err)
 	}
 }

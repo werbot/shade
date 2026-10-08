@@ -12,7 +12,8 @@ import (
 
 // Store is an open database of shade.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	key []byte // encryption key of values; the caller owns it
 }
 
 // Home returns the state directory of shade: SHADE_HOME, otherwise ~/.shade.
@@ -28,13 +29,27 @@ func Home() string {
 	return filepath.Join(home, ".shade")
 }
 
-// Open creates the directory home, opens the shade.db database in it and applies the schema.
-func Open(home string) (*Store, error) {
+// EnsureHome creates the state directory if it is missing. It is idempotent.
+// It is called before crypt.LoadOrCreateKey: that one does not create the directory.
+func EnsureHome(home string) error {
 	if err := os.MkdirAll(home, 0o755); err != nil {
-		return nil, fmt.Errorf("state directory %s: %w", home, err)
+		return fmt.Errorf("state directory %s: %w", home, err)
+	}
+	return nil
+}
+
+// Open creates the directory home, opens the shade.db database in it and applies the schema.
+// The key is needed to encrypt the values of entities (see Allocate).
+func Open(home string, key []byte) (*Store, error) {
+	if err := EnsureHome(home); err != nil {
+		return nil, err
 	}
 	path := filepath.Join(home, "shade.db")
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	// _txlock=immediate: a write transaction takes the write lock at once, not on
+	// the first INSERT. Otherwise two parallel sessions in WAL get
+	// SQLITE_BUSY when a read transaction is upgraded to a write instead of waiting.
+	dsn := "file:" + path + "?_txlock=immediate&_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening the database %s: %w", path, err)
@@ -43,7 +58,7 @@ func Open(home string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, key: key}, nil
 }
 
 // Close closes the database.
