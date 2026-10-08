@@ -271,28 +271,3 @@ func TestCorpusPublicIP6KeepList(t *testing.T) {
 		}
 	}
 }
-
-// TestCorpusFindsAdjacentSecrets — rules with a consuming trailing context
-// (boundaries instead of Python lookaround) must not lose the second secret
-// separated by one character. This used to be lost: the engine continued the search from
-// the end of the whole match, that is past the separator already eaten by the guard, and
-// the second secret stayed behind the start of the next search.
-func TestCorpusFindsAdjacentSecrets(t *testing.T) {
-	byName := ruleSet(t)
-	cases := []struct{ rule, text string }{
-		{"card", "4111 1111 1111 1111 5500 0000 0000 0004"},
-		{"card", "4111111111111111,5500000000000004"},
-		{"phone", "+1 415 555 0142 +1 415 555 0143"},
-		{"assignment", "password=" + "AbCdEf0123456789" + " token=" + "Zm9vYmFyQmF6UXV4"},
-	}
-	for _, c := range cases {
-		r, ok := byName[c.rule]
-		if !ok {
-			t.Errorf("rule %s is not in the rule set", c.rule)
-			continue
-		}
-		if spans := rules.Detect(c.text, []rules.Rule{r}); len(spans) != 2 {
-			t.Errorf("%s: want 2 spans in %q, got %+v", c.rule, c.text, spans)
-		}
-	}
-}

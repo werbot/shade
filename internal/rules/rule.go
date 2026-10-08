@@ -24,8 +24,9 @@ type Rule struct {
 	Enabled     bool
 	Builtin     bool
 
-	re    *regexp.Regexp
-	allow []*regexp.Regexp
+	re     *regexp.Regexp
+	reNext *regexp.Regexp
+	allow  []*regexp.Regexp
 }
 
 // Spec is a rule before compilation. ID is the rule name (in Rule it lives in Name, in
@@ -62,6 +63,16 @@ func Compile(s Spec) (Rule, error) {
 	if err != nil {
 		return Rule{}, fmt.Errorf("rule %q: pattern %q: %w", s.ID, s.Pattern, err)
 	}
+	// reNext is the same pattern with a mandatory leading character, taken in parentheses.
+	// The engine uses it to search for matches after the group already found: the leading character is needed
+	// by the leading context, and its mandatory nature cuts off `^`, which at the boundary
+	// the search window it would match the start of the slice, not of the text (see nextMatch in
+	// detect.go). The parenthesis is needed so that the rule match is read from group 1:
+	// group zero includes an extra character.
+	reNext, err := regexp.Compile(`[\s\S](` + pattern + `)`)
+	if err != nil {
+		return Rule{}, fmt.Errorf("rule %q: pattern %q: %w", s.ID, s.Pattern, err)
+	}
 	if !placeholder.Types[s.Type] {
 		return Rule{}, fmt.Errorf("rule %q: unknown type %q", s.ID, s.Type)
 	}
@@ -90,6 +101,7 @@ func Compile(s Spec) (Rule, error) {
 		Enabled:     s.Enabled,
 		Builtin:     s.Builtin,
 		re:          re,
+		reNext:      reNext,
 		allow:       allow,
 	}, nil
 }

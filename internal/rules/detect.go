@@ -66,15 +66,12 @@ func Detect(text string, rs []Rule) []Span {
 // the trailing context coincides with the end of the match, so for the remaining
 // rules the behaviour is the same.
 //
-// ponytail: the search window starts one character before resume — the leading context of the rule
-// ((?:^|[^\w]), \b) needs a character before the match, — so on the rule
-// costs O(number of matches × length of the text). For tool output this
-// is enough; on streaming megabytes, go back to a single FindAll plus a point
-// check of the tails.
+// The cost stays linear: each match costs one pass from
+// the end of the previous group to the nearest match, not over the whole remainder.
 func matches(r Rule, text string) [][]int {
 	var out [][]int
 	for resume := 0; resume <= len(text); {
-		m := nextMatch(r.re, text, max(0, resume-1))
+		m := nextMatch(r, text, resume)
 		if m == nil {
 			break
 		}
@@ -100,28 +97,48 @@ func bounds(m []int, group int) (start, end int, ok bool) {
 	return m[g], m[g+1], true
 }
 
-// nextMatch returns the first match of the text starting no earlier than base.
+// nextMatch returns the nearest match of the rule starting no earlier than resume.
 //
-// A match exactly at the window boundary is dropped and the window shifts: `^` there
-// would match the start of the slice rather than of the text. The dropped match starts
-// inside the previous group (one character to the left), that is, it is already covered —
-// FindAll did not return it either. The shift does not lose matches from the same window:
-// the FindAll list does not overlap and goes in ascending start.
-func nextMatch(re *regexp.Regexp, text string, base int) []int {
-	for ; base <= len(text); base++ {
-		for _, m := range re.FindAllStringSubmatchIndex(text[base:], -1) {
-			if base > 0 && m[0] == 0 {
-				continue
-			}
-			for i, off := range m {
-				if off >= 0 {
-					m[i] = off + base
-				}
-			}
-			return m
+// The search runs over a window one character before resume: the leading context of the rule
+// (`(?:^|[^\w])`, `\b`) a character before the match is needed. Inside the window the pattern
+// is taken with a mandatory leading character (Rule.reNext) — otherwise `^` would match the
+// the start of the slice rather than of the text, and at the window boundary there would be matches
+// which are not in the text. Not only is such a match false by itself: it also
+// eats the real one, which goes past its end (N1 — two card numbers separated by one
+// space, when the last digit of the first falls into the issuer class `[3-6]`, with
+// which the second match starts). With a mandatory leading character
+// every match found relies only on real characters of the text.
+// The price of this is that a match starting exactly at the window boundary, that is at
+// the last character of the previous group, is not found — it overlaps it.
+func nextMatch(r Rule, text string, resume int) []int {
+	base := max(0, resume-1)
+	// The start of the text is real, there is no synthetic `^` there: at position zero
+	// we search with the ordinary pattern, otherwise we would not find a match starting at character zero.
+	re := r.reNext
+	if base == 0 {
+		re = r.re
+	}
+	// FindStringSubmatchIndex, not FindAllStringSubmatchIndex: only the
+	// the nearest match, while collecting all matches of the window would turn the scan from
+	// linear into a k-fold pass over the rest of the text (on the output of a tool with
+	// thousands of matches that is minutes).
+	m := re.FindStringSubmatchIndex(text[base:])
+	if m == nil {
+		return nil
+	}
+	if base > 0 {
+		// Group 1 of the pattern with a mandatory leading character is the
+		// the rule match, while group zero also covers the character in front.
+		// We drop it, bringing the indices back to the usual form: otherwise the leading
+		// character would fall into the span of a rule without a secret group.
+		m = m[2:]
+	}
+	for i, off := range m {
+		if off >= 0 {
+			m[i] = off + base
 		}
 	}
-	return nil
+	return m
 }
 
 // hasKeyword reports whether the text passes the prefilter of the rule. An empty
