@@ -38,13 +38,22 @@ func EnsureHome(home string) error {
 	return nil
 }
 
+// dbName is the name of the database file in the state directory.
+const dbName = "shade.db"
+
+// DBPath returns the path of the database in the directory home.
+//
+// Exported for the same reason as crypt.KeyPath: the calling code must not
+// repeat the name of the file, otherwise the copy would silently drift from the original.
+func DBPath(home string) string { return filepath.Join(home, dbName) }
+
 // Open creates the directory home, opens the shade.db database in it and applies the schema.
 // The key is needed to encrypt the values of entities (see Allocate).
 func Open(home string, key []byte) (*Store, error) {
 	if err := EnsureHome(home); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(home, "shade.db")
+	path := DBPath(home)
 	// _txlock=immediate: a write transaction takes the write lock at once, not on
 	// the first INSERT. Otherwise two parallel sessions in WAL get
 	// SQLITE_BUSY when a read transaction is upgraded to a write instead of waiting.

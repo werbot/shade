@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -71,19 +72,21 @@ type inputArgs struct {
 }
 
 // parseInputArgs parses the common command arguments: [--json] [--project DIR] [FILE].
-//
-// jsonOK allows --json: deanon does not have it, and accepting a flag that does nothing
-// does is worse than a refusal — the caller will think it got JSON.
-func parseInputArgs(args []string, jsonOK bool) (inputArgs, error) {
+func parseInputArgs(args []string) (inputArgs, error) {
 	var a inputArgs
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; {
-		case arg == "--json" && jsonOK:
+		case arg == "--json":
 			a.json = true
 		case arg == "--project":
 			i++
-			if i == len(args) {
+			// A value starting with a dash is the next flag, not the
+			// directory: otherwise `--project --json` would silently swallow --json.
+			if i == len(args) || args[i] == "" || strings.HasPrefix(args[i], "-") {
 				return inputArgs{}, errors.New("--project requires a directory")
+			}
+			if err := checkDir(args[i]); err != nil {
+				return inputArgs{}, fmt.Errorf("--project: %w", err)
 			}
 			a.project = args[i]
 		case strings.HasPrefix(arg, "-"):
@@ -95,6 +98,30 @@ func parseInputArgs(args []string, jsonOK bool) (inputArgs, error) {
 		}
 	}
 	return a, nil
+}
+
+// checkDir verifies that dir is an existing directory. Without it ProjectForPath
+// would fall back to the absolute path of a nonexistent directory (git silently
+// returns empty) and would create a row in projects that nothing else can be
+// match: the placeholders of such a "project" are unreachable.
+func checkDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	return nil
+}
+
+// writeJSON prints the value to w. SetEscapeHTML(false): otherwise the angle brackets
+// the placeholders will go into unicode escape sequences and the output will stop
+// be readable by eye.
+func writeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
 }
 
 // readInput reads the command text: from the file argument or from stdin.

@@ -20,11 +20,18 @@ const (
 	keyName   = "key"
 )
 
+// KeyPath returns the path to the key file in the home directory.
+//
+// Exported so that the file name is not repeated in the calling code: having diverged,
+// a copy silently breaks checks like "the key does not exist yet" — for example, doctor would again start
+// creating the very state it checks.
+func KeyPath(home string) string { return filepath.Join(home, keyName) }
+
 // LoadOrCreateKey reads the key from home/key, and if it is missing creates a file
 // of 32 random bytes with mode 0600. The file is created with O_EXCL, so
 // a concurrent process will not overwrite an already existing key.
 func LoadOrCreateKey(home string) ([]byte, error) {
-	path := filepath.Join(home, keyName)
+	path := KeyPath(home)
 	key, err := readKey(path)
 	if err == nil {
 		return key, nil

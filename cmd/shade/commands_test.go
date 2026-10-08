@@ -146,6 +146,19 @@ func TestDoctor(t *testing.T) {
 	})
 }
 
+// The exit code contract: wrong arguments are 2. doctor takes no
+// arguments, so any argument is a call error, not a reason to do something.
+func TestDoctorRejectsArgs(t *testing.T) {
+	t.Setenv("SHADE_HOME", t.TempDir())
+	var out, errb bytes.Buffer
+	if code := runDoctor([]string{"--json"}, IO{Out: &out, Err: &errb}); code != 2 {
+		t.Fatalf("code %d, expected 2 (%s)", code, errb.String())
+	}
+	if errb.Len() == 0 {
+		t.Fatal("code 2 without an explanation in stderr")
+	}
+}
+
 func TestHomeStatus(t *testing.T) {
 	t.Run("no directory", func(t *testing.T) {
 		status, err := homeStatus(filepath.Join(t.TempDir(), "nope"))

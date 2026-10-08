@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 
+	"github.com/werbot/shade/internal/crypt"
 	"github.com/werbot/shade/internal/store"
 )
 
@@ -26,7 +26,10 @@ func init() {
 // Nothing may be created in the process: the key and the database are exactly what the user
 // came to ask about, and a key created along the way would erase the difference between "configured"
 // and "was just configured".
-func runDoctor(_ []string, stdio IO) int {
+func runDoctor(args []string, stdio IO) int {
+	if len(args) != 0 {
+		return fail(stdio, "doctor", 2, fmt.Errorf("unexpected arguments: %v", args))
+	}
 	home := store.Home()
 	status, err := homeStatus(home)
 	if err != nil {
@@ -39,7 +42,7 @@ func runDoctor(_ []string, stdio IO) int {
 	// core.New, so "there is no key" also means "there is no database". Going further is not allowed —
 	// the check would create what it checks, and telling a configured environment
 	// from a just-configured one would become impossible.
-	if _, err := os.Stat(filepath.Join(home, "key")); errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(crypt.KeyPath(home)); errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintln(stdio.Out, "key: missing, it will be created on first run")
 		fmt.Fprintln(stdio.Out, "database: not created")
 		fmt.Fprintln(stdio.Out, "rules: unknown, the database is not created")
@@ -59,7 +62,7 @@ func runDoctor(_ []string, stdio IO) int {
 	defer e.Close()
 
 	fmt.Fprintln(stdio.Out, "key: readable")
-	fmt.Fprintf(stdio.Out, "database: %s\n", filepath.Join(home, "shade.db"))
+	fmt.Fprintf(stdio.Out, "database: %s\n", store.DBPath(home))
 	fmt.Fprintf(stdio.Out, "project: %s\n", e.RootPath())
 	fmt.Fprintf(stdio.Out, "rules: %d active\n", e.RuleCount())
 	return 0
