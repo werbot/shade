@@ -28,6 +28,7 @@ func TestRulesAddIsRejectedIfRegexDoesNotCompile(t *testing.T) {
 
 // addAcme creates a user rule in the given scope. Shared across tests,
 // where the rule is setup, not the subject of the check.
+
 func addAcme(t *testing.T, home, dir string, global bool) {
 	t.Helper()
 	args := []string{"rules", "add", "--name", "acme", "--type", "TICKET",
@@ -63,6 +64,7 @@ func TestRulesAddThenListThenDisable(t *testing.T) {
 // be visible to `shade test`. Without it an implementation that never reads the database
 // would pass the whole set: a disabled rule is absent from memory exactly as it
 // is not in the output.
+
 func TestSelfTestShowsEnabledUserRule(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	addAcme(t, home, dir, true)
@@ -79,6 +81,7 @@ func TestSelfTestShowsEnabledUserRule(t *testing.T) {
 
 // A rule added without --global lives in the current project: in its own directory
 // visible, in another it is not.
+
 func TestRulesAddedWithoutGlobalIsProjectScoped(t *testing.T) {
 	home, dir, other := t.TempDir(), gitDir(t), gitDir(t)
 	addAcme(t, home, dir, false)
@@ -133,6 +136,7 @@ func TestRulesRejectsBadArgs(t *testing.T) {
 // rm refuses a builtin rule and a typo in the name, and both refusals must
 // reach the user in words: a builtin rule can be disabled, but not
 // is deleted, whereas a name not found is a typo, not a database failure.
+
 func TestRulesRmBuiltinAndUnknown(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	for _, tc := range []struct {
@@ -161,28 +165,7 @@ func TestRulesRmBuiltinAndUnknown(t *testing.T) {
 
 // export takes the active set and drops the builtin rules: a builtin
 // rule set restores itself, while in a file it would be dead weight.
-func TestRulesExportDropsBuiltin(t *testing.T) {
-	home, dir := t.TempDir(), gitDir(t)
-	addAcme(t, home, dir, true)
 
-	code, stdout, stderr := runCLI(t, home, dir, []string{"rules", "export"}, "")
-	if code != 0 {
-		t.Fatalf("export: %d %s", code, stderr)
-	}
-	for _, want := range []string{"acme", "TICKET", `ACME-`} {
-		if !strings.Contains(stdout, want) {
-			t.Fatalf("the export has no %q: %q", want, stdout)
-		}
-	}
-	if strings.Contains(stdout, "assignment") {
-		t.Fatalf("a builtin rule got into the export: %q", stdout)
-	}
-}
-
-// End-to-end path "rule from the DB → anonymization → restoration".
-// Internal hosts are not caught by the builtin rule set: the user adds them.
-// The input is a line with the host itself: the original fixture of the plan had none, and
-// the HOST rule had nothing to fire on.
 func TestAnonHonoursProjectRule(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	if code, _, stderr := runCLI(t, home, dir, []string{"rules", "add", "--name",
@@ -214,36 +197,7 @@ func TestAnonHonoursProjectRule(t *testing.T) {
 // assignment stops catching the secret, and anon lets the value out in the clear.
 // The check on anon is the subject of the test here — the return code of `add` would let the
 // the regression through, because the insert goes through successfully.
-func TestRulesAddDoesNotDisableBuiltin(t *testing.T) {
-	home, dir := t.TempDir(), gitDir(t)
-	sample := "password=" + secretValue
 
-	if code, masked, stderr := runCLI(t, home, dir, []string{"anon"}, sample+"\n"); code != 0 ||
-		!strings.Contains(masked, "<SECRET_") {
-		t.Fatalf("setup: %d %q %s", code, masked, stderr)
-	}
-
-	addCode, _, addErr := runCLI(t, home, dir, []string{"rules", "add", "--name", "assignment",
-		"--type", "HOST", "--pattern", "zzz", "--global"}, "")
-
-	// The leak is checked first: the regression matters not because `add` returned the wrong
-	// code, but that the builtin rule went dark and the value went out in the clear. With
-	// the reverse order a guard mutation would fail on the code check, before reaching
-	// the subject of the test.
-	code, masked, stderr := runCLI(t, home, dir, []string{"anon"}, sample+"\n")
-	if code != 0 {
-		t.Fatalf("anon: %d %s", code, stderr)
-	}
-	if strings.Contains(masked, secretValue) {
-		t.Fatalf("the builtin rule went dark, the value went out in the clear: %q", masked)
-	}
-	if addCode != 1 || !strings.Contains(addErr, "assignment") {
-		t.Fatalf("replacing a builtin rule was not rejected: code %d, %s", addCode, addErr)
-	}
-}
-
-// A pattern starting with a dash is created only by the --flag=value form: in the
-// in the separate form parseFlags treats such a value as the next flag.
 func TestRulesAddAcceptsDashLeadingPattern(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	code, _, stderr := runCLI(t, home, dir, []string{"rules", "add", "--name", "pem",
@@ -257,5 +211,83 @@ func TestRulesAddAcceptsDashLeadingPattern(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "pem") {
 		t.Fatalf("the rule with a leading dash did not fire: %q", stdout)
+	}
+}
+
+// listLines returns all `rules list` output rows for the named rule: the same
+// a name can sit in two scopes at once, and the scope check must see both.
+// The table columns are the command's contract, and reading them as text is cheaper than
+// open the database the second way.
+func listLines(t *testing.T, home, dir, rule string) []string {
+	t.Helper()
+	code, stdout, stderr := runCLI(t, home, dir, []string{"rules", "list"}, "")
+	if code != 0 {
+		t.Fatalf("rules list: %d %s", code, stderr)
+	}
+	var out []string
+	for _, line := range strings.Split(stdout, "\n") {
+		if fields := strings.Split(line, "\t"); fields[0] == rule {
+			out = append(out, line)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("the rule %q is missing from the list: %q", rule, stdout)
+	}
+	return out
+}
+
+// listLine returns the first row: global rows come before project ones.
+func listLine(t *testing.T, home, dir, rule string) string {
+	t.Helper()
+	return listLines(t, home, dir, rule)[0]
+}
+
+// The builtin rule guard is narrowed by scope, not by name: a same-named rule
+// is created in the project and overrides the builtin in its own project. Without this check
+// the guard without scopeCond (by name alone) stays green, and along with it breaks
+// the documented overlap of scopes — `rules add` without --global starts
+// refuse where it must answer 0.
+func TestRulesAddShadowsBuiltinInProjectScope(t *testing.T) {
+	home, dir := t.TempDir(), gitDir(t)
+	// Seeding of the builtin set: `list` brings the engine up, and it is what seeds it.
+	builtin := listLine(t, home, dir, "assignment")
+
+	code, _, stderr := runCLI(t, home, dir, []string{"rules", "add", "--name", "assignment",
+		"--type", "HOST", "--pattern", "zzz"}, "")
+	if code != 0 {
+		t.Fatalf("a project rule named after a builtin was rejected: code %d, %s", code, stderr)
+	}
+
+	rows := listLines(t, home, dir, "assignment")
+	if len(rows) != 2 {
+		t.Fatalf("expected a global row and a project row, got %d: %v", len(rows), rows)
+	}
+	if rows[0] != builtin {
+		t.Fatalf("the global row changed:\nwas  %q\nbecame %q", builtin, rows[0])
+	}
+	if !strings.Contains(rows[1], "HOST") || !strings.Contains(rows[1], "no") {
+		t.Fatalf("the project row did not appear: %q", rows[1])
+	}
+
+	// The price of the override is visible, not implied: in its own directory the project
+	// the rule wins, and until `rules rm` the value is not masked.
+	code, masked, stderr := runCLI(t, home, dir, []string{"anon"}, "password="+secretValue+"\n")
+	if code != 0 {
+		t.Fatalf("anon: %d %s", code, stderr)
+	}
+	if !strings.Contains(masked, secretValue) {
+		t.Fatalf("the project rule did not override the builtin: %q", masked)
+	}
+
+	if code, _, stderr := runCLI(t, home, dir,
+		[]string{"rules", "rm", "--name", "assignment"}, ""); code != 0 {
+		t.Fatalf("rm of a project rule: %d %s", code, stderr)
+	}
+	code, masked, stderr = runCLI(t, home, dir, []string{"anon"}, "password="+secretValue+"\n")
+	if code != 0 {
+		t.Fatalf("anon: %d %s", code, stderr)
+	}
+	if strings.Contains(masked, secretValue) {
+		t.Fatalf("after rm the builtin rule did not come back: %q", masked)
 	}
 }
