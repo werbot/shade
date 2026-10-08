@@ -142,6 +142,32 @@ func TestSeedBuiltinSurvivesConcurrentStart(t *testing.T) {
 	}
 }
 
+// TestSeedBuiltinDoesNotSwallowRealFailures — the tolerance is narrow: only
+// only an "already builtin" rejection. Any other insert failure must come back
+// an error: an unseeded rule is a rule that will not catch a secret, and
+// a silent success is worse than a failure here. Injected with a trigger, and not with DROP TABLE:
+// migrate would recreate a deleted table through CREATE TABLE IF NOT EXISTS, and
+// the trigger survives a reopen.
+func TestSeedBuiltinDoesNotSwallowRealFailures(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.DB().ExecContext(ctx,
+		`CREATE TRIGGER rules_no_write BEFORE INSERT ON rules
+		 BEGIN SELECT RAISE(ABORT, 'rule writing unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.SeedBuiltin(ctx)
+	if err == nil {
+		t.Fatal("the insert failure was swallowed: the rule set is not seeded, yet SeedBuiltin is green")
+	}
+	if !strings.Contains(err.Error(), "rule writing unavailable") {
+		t.Fatalf("the error does not name the cause of the failure: %v", err)
+	}
+	if errors.Is(err, store.ErrBuiltinRule) {
+		t.Fatalf("a real failure was taken for a builtin rule rejection: %v", err)
+	}
+}
+
 // TestSeededRulesWorkFromTheDatabase — the seeded rules must work from
 // the database as a whole: the designed rule set is checked by the corpus on LoadBuiltin,
 // while here we check that the pattern, the type and the validator survived the write into SQLite.
