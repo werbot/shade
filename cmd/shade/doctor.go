@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
+
+	"github.com/werbot/shade/internal/store"
 )
 
 func init() {
@@ -17,10 +18,9 @@ func init() {
 }
 
 // runDoctor prints a report on the state of the environment and returns 1 if
-// the state directory is unavailable. There is no way to check the key, the database and the rules yet:
-// the crypto and store layers appear in later tasks.
+// the state directory is unavailable. The doctor does not check the key and the database yet.
 func runDoctor(_ []string, stdio IO) int {
-	home := shadeHome()
+	home := store.Home()
 	status, err := homeStatus(home)
 	if err != nil {
 		fmt.Fprintf(stdio.Err, "directory: %s — %v\n", home, err)
@@ -31,18 +31,6 @@ func runDoctor(_ []string, stdio IO) int {
 	fmt.Fprintln(stdio.Out, "database: missing")
 	fmt.Fprintln(stdio.Out, "rules: unknown (the database is not created)")
 	return 0
-}
-
-// shadeHome returns the shade state directory: SHADE_HOME, otherwise ~/.shade.
-func shadeHome() string {
-	if dir := os.Getenv("SHADE_HOME"); dir != "" {
-		return dir
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".shade")
 }
 
 // homeStatus describes the state of directory dir as a human-readable string.
