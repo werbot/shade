@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"github.com/werbot/shade/internal/rules"
 )
@@ -34,7 +35,11 @@ func (s *Store) SeedBuiltin(ctx context.Context) error {
 		if seeded[spec.ID] {
 			continue
 		}
-		if err := s.AddRule(ctx, nil, spec); err != nil {
+		// A "builtin" rejection here means not an error but a late arrival: the list above
+		// read before a neighbour inserts, and on a parallel start (two sessions in
+		// one project) the rule is already seeded — the goal is reached. Returning this
+		// error would bring the whole run down because of a race.
+		if err := s.AddRule(ctx, nil, spec); err != nil && !errors.Is(err, ErrBuiltinRule) {
 			return err
 		}
 	}

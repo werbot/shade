@@ -1,9 +1,13 @@
 package store_test
 
 import (
+	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/werbot/shade/internal/rules"
+	"github.com/werbot/shade/internal/store"
 )
 
 // TestSeedBuiltinIsIdempotent — seeding happens on every start of the engine, so
@@ -67,6 +71,74 @@ func TestSeedBuiltinKeepsUserEdit(t *testing.T) {
 	}
 	if !saw {
 		t.Fatal("rule vanished")
+	}
+}
+
+// TestAddRuleBuiltinRefusalIsSentinel — SeedBuiltin rests on this recognition:
+// a builtin rule rejection must be recognised by errors.Is, and its text is for
+// the user must not change (a sentinel through %w would add its text to
+// the message a human reads).
+func TestAddRuleBuiltinRefusalIsSentinel(t *testing.T) {
+	s := openTemp(t)
+	spec := rules.Spec{ID: "sentinel-probe", Type: "SECRET", Kind: "regex", Pattern: `x`, Builtin: true}
+	if err := s.AddRule(ctx, nil, spec); err != nil {
+		t.Fatal(err)
+	}
+	err := s.AddRule(ctx, nil, spec)
+	if !errors.Is(err, store.ErrBuiltinRule) {
+		t.Fatalf("the builtin rule rejection was not recognised by the sentinel: %v", err)
+	}
+	if !strings.Contains(err.Error(), "builtin") || !strings.Contains(err.Error(), "sentinel-probe") {
+		t.Fatalf("the rejection text changed: %q", err)
+	}
+	if err := s.RemoveRule(ctx, nil, "sentinel-probe"); !errors.Is(err, store.ErrBuiltinRule) {
+		t.Fatalf("the builtin rule deletion rejection was not recognised by the sentinel: %v", err)
+	}
+}
+
+// TestSeedBuiltinSurvivesConcurrentStart — a cold start of two sessions in one
+// project: everyone sees the builtin rule as missing and inserts it
+// in a race. The loser gets a "builtin" rejection and must take it as
+// "already seeded", otherwise the run fails with exit code 1 and an empty stdout (final-review.md,
+// Important 1). The test on processes is in the report; here the race is on a single store.
+func TestSeedBuiltinSurvivesConcurrentStart(t *testing.T) {
+	s := openTemp(t)
+	const goroutines = 8
+	start := make(chan struct{})
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[i] = s.SeedBuiltin(ctx)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("seeding %d: %v", i, err)
+		}
+	}
+
+	specs, err := rules.Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListRules(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var builtin int
+	for _, r := range rows {
+		if r.Builtin {
+			builtin++
+		}
+	}
+	if builtin != len(specs) {
+		t.Fatalf("builtin rows %d, expected %d", builtin, len(specs))
 	}
 }
 

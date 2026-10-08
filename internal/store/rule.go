@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -147,7 +146,7 @@ func (s *Store) AddRule(ctx context.Context, projectID *int64, r rules.Spec) err
 		append([]any{r.ID}, args...)...).Scan(&builtin)
 	switch {
 	case err == nil && builtin:
-		return fmt.Errorf("rule %q is builtin: it can be disabled, but not replaced — pick another name", r.ID)
+		return builtinRuleError{fmt.Sprintf("rule %q is builtin: it can be disabled, but not replaced — pick another name", r.ID)}
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("rule %q: %w", r.ID, err)
 	}
@@ -224,8 +223,11 @@ func (s *Store) RemoveRule(ctx context.Context, projectID *int64, name string) e
 	case err != nil:
 		return fmt.Errorf("rule %q: %w", name, err)
 	case builtin:
-		return fmt.Errorf("rule %q is builtin: it can be disabled, but not deleted", name)
+		return builtinRuleError{fmt.Sprintf("rule %q is builtin: it can be disabled, but not deleted", name)}
 	default:
+		// The branch is unreachable outside a race: the row can lose builtin = 0 between
+		// DELETE and SELECT. A safety net so that such a "not deleted" looks
+		// success; neither "not found" nor "builtin" would be true here.
 		return fmt.Errorf("rule %q was not deleted", name)
 	}
 }
@@ -276,26 +278,4 @@ func sortedRules(byName map[string]rules.Rule) []rules.Rule {
 		return strings.Compare(a.Name, b.Name)
 	})
 	return out
-}
-
-// jsonList serializes a list into a JSON array: an empty list turns into
-// [], so that the column always holds an array and not null.
-func jsonList(v []string) (string, error) {
-	if len(v) == 0 {
-		return "[]", nil
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
-// parseJSONList parses a JSON array from the keywords or allowlist column.
-func parseJSONList(raw string) ([]string, error) {
-	var v []string
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return nil, err
-	}
-	return v, nil
 }

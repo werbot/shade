@@ -28,8 +28,8 @@ const (
 func KeyPath(home string) string { return filepath.Join(home, keyName) }
 
 // LoadOrCreateKey reads the key from home/key, and if it is missing creates a file
-// of 32 random bytes with mode 0600. The file is created with O_EXCL, so
-// a concurrent process will not overwrite an already existing key.
+// of 32 random bytes with mode 0600. Publishing the key is atomic: a concurrent
+// process either sees the finished file in full or creates its own.
 func LoadOrCreateKey(home string) ([]byte, error) {
 	path := KeyPath(home)
 	key, err := readKey(path)
@@ -44,20 +44,29 @@ func LoadOrCreateKey(home string) ([]byte, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("generating the key: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		// another process created the key first — use it
-		return readKey(path)
-	}
+	// The key is written to a temporary file and published with a hard link: link, unlike
+	// rename, does not overwrite someone else's file, but fails on an existing one.
+	// The previous scheme "create with O_EXCL and append" left a window in which
+	// a concurrent process opened a zero-length file and failed the length
+	// check, — and regenerating the key is inadmissible: the old values could not be read.
+	tmp, err := os.CreateTemp(home, keyName+".tmp-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating key %s: %w", path, err)
 	}
-	if _, err := f.Write(key); err != nil {
-		f.Close()
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(key); err != nil {
+		tmp.Close()
 		return nil, fmt.Errorf("writing key %s: %w", path, err)
 	}
-	if err := f.Close(); err != nil {
+	if err := tmp.Close(); err != nil {
 		return nil, fmt.Errorf("writing key %s: %w", path, err)
+	}
+	if err := os.Link(tmp.Name(), path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// another process created the key first — use it
+			return readKey(path)
+		}
+		return nil, fmt.Errorf("creating key %s: %w", path, err)
 	}
 	return key, nil
 }

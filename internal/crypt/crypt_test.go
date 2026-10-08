@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/werbot/shade/internal/crypt"
@@ -99,5 +100,47 @@ func TestLoadOrCreateKeyIsStableAndPrivate(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("want 0600, got %o", info.Mode().Perm())
+	}
+}
+
+// TestLoadOrCreateKeySurvivesConcurrentCreation — a cold start: several
+// processes create the key in an empty directory at once. The winner publishes the file,
+// the rest must read it in full, and not open it as zero-length: regenerating
+// the key is not allowed — the old values would remain undecryptable.
+func TestLoadOrCreateKeySurvivesConcurrentCreation(t *testing.T) {
+	home := t.TempDir()
+	const goroutines = 8
+	start := make(chan struct{})
+	keys := make([][]byte, goroutines)
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			keys[i], errs[i] = crypt.LoadOrCreateKey(home)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("key %d: %v", i, err)
+		}
+		if len(keys[i]) != 32 {
+			t.Fatalf("key %d: %d bytes", i, len(keys[i]))
+		}
+		if !bytes.Equal(keys[i], keys[0]) {
+			t.Fatal("concurrent calls got different keys")
+		}
+	}
+	// Publishing with a link leaves no temporary files behind.
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "key" {
+		t.Fatalf("extra entries left in the directory: %v", entries)
 	}
 }
