@@ -79,6 +79,16 @@ func Compile(s Spec) (Rule, error) {
 	if s.Kind != "regex" && s.Kind != "literal" && s.Kind != "entropy" {
 		return Rule{}, fmt.Errorf("rule %q: unknown kind %q", s.ID, s.Kind)
 	}
+	// A secret group outside the pattern is a rule that will find nothing: bounds
+	// would drop every match, and in the import report the rule would look like it works.
+	// A negative group does not merely fail to find — bounds indexes the match
+	// indexes the match by it and panics, and someone else's TOML also comes in as input here. The check lives in
+	// Compile, because that is the only place that validates Spec: that way it
+	// will be inherited by the import and by future rule editing through the CLI.
+	if s.SecretGroup < 0 || s.SecretGroup > re.NumSubexp() {
+		return Rule{}, fmt.Errorf("rule %q: secretGroup %d, but the pattern has %d groups",
+			s.ID, s.SecretGroup, re.NumSubexp())
+	}
 	allow := make([]*regexp.Regexp, 0, len(s.Allowlist))
 	for _, a := range s.Allowlist {
 		ra, err := regexp.Compile(a)
