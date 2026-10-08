@@ -94,6 +94,29 @@ func TestCorpusSecretsAreDetected(t *testing.T) {
 		{"jwt", "token " + "eyJ" + "hbGciOiJIUzI1NiJ9." + "eyJzdWIiOiIxIn0." + "c2lnbmF0dXJlMTIz"},
 		{"phone", "call " + "+14155550142" + " now"},
 		{"card", "card " + "4111" + "1111" + "1111" + "1111" + " on file"},
+		{"card", "card " + "4111" + "-1111-1111-1111" + " on file"},
+		// The key lists in assignment, py_repr and pytest_where are lowercase,
+		// so without the (?i) flag the rule recognised the secret only in lower
+		// case: in upper case the key name did not match and the value went to the
+		// model in the open. In the reference all three patterns carry re.IGNORECASE.
+		{"assignment", "PASSWORD=" + "Xk7pQ2mZr9Tv"},
+		{"assignment", "PASSWORD: " + "hunter22abc"},
+		{"assignment", "PresharedKey = " + "AbCdEf0123456789"},
+		{"assignment", "PSK=" + "AbCdEf0123456789"},
+		{"assignment", "ApiKey=" + "AbCdEf0123456789"},
+		// The names `authtoken` and `clientsecret` without an underscore are unknown to the
+		// reference either: its key list also requires `_`.
+		{"assignment", "AUTH_TOKEN=" + "AbCdEf0123456789"},
+		{"assignment", "CLIENT_SECRET=" + "AbCdEf0123456789"},
+		{"py_repr", `{"PASSWORD": "` + "AbCdEf0123456789" + `"}`},
+		{"pytest_where", "E       +  where '" + "AbCdEf0123456789" + "' = settings.PASSWORD"},
+		// Branches lost while rewriting the fixtures of the reference corpus:
+		// bcrypt (the most common hash), argon2/scrypt, the separators of a card number
+		// and a py_repr value with spaces inside.
+		{"hash", "root:" + "$2b$" + "12$" + strings.Repeat("A", 53)},
+		{"hash", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2FsdA"},
+		{"hash", "$scrypt$ln=16384,r=8,p=1$c2FsdA==$aGFzaA=="},
+		{"py_repr", "Config(api_key='" + "Xk7 pQ2m Zr9" + "')"},
 	}
 	for _, c := range cases {
 		detect(t, byName, c.rule, c.text, true)
@@ -146,6 +169,10 @@ func TestCorpusCleanTextIsUntouched(t *testing.T) {
 		"order " + "4123456789012345" + " placed",
 		// A parenthesis follows the value immediately — that is a function call, not an assignment.
 		"token = get_secret_value(1)",
+		// The only reference sample where random_enough suppresses a hit from
+		// prefix: `npm_` is there, while `check.py` is eight characters without a single
+		// digit, that is, it does not look like a secret.
+		"checks/npm_check.py",
 		// Below are samples of opt-in rules: they are disabled by default, and the text
 		// must stay intact.
 		"reach " + "bob" + "@example.com for access",
@@ -217,6 +244,55 @@ func TestCorpusEntropyKeepList(t *testing.T) {
 	for _, s := range keep {
 		if spans := rules.Detect(s, []rules.Rule{entropy}); len(spans) != 0 {
 			t.Fatalf("entropy: false positive in %q: %+v", s, spans)
+		}
+	}
+}
+
+// TestCorpusPublicIP6KeepList — a port of _RULE_KEEP['public_ip6']. The sample
+// `docs use 2001:db8::1 as the example address` is not ported here: Go considers
+// the documentation range 2001:db8::/32 global and the rule cuts it,
+// whereas the Python ipaddress.is_global rejects it. The direction of the miss is —
+// an extra mask, there is no leak; the rule is opt-in.
+func TestCorpusPublicIP6KeepList(t *testing.T) {
+	byName := ruleSet(t)
+	keep := []string{
+		"inet6 ::1/128 scope host",
+		"inet6 fe80::1e69:7aff:fe3c:1/64 scope link",
+		"inet6 fd00:1234::5/64 scope global",
+		"started 12:34:56, link/ether 00:11:22:33:44:55",
+	}
+	ip6, ok := byName["public_ip6"]
+	if !ok {
+		t.Fatal("rule public_ip6 is not in the rule set")
+	}
+	for _, s := range keep {
+		if spans := rules.Detect(s, []rules.Rule{ip6}); len(spans) != 0 {
+			t.Fatalf("public_ip6: false positive in %q: %+v", s, spans)
+		}
+	}
+}
+
+// TestCorpusFindsAdjacentSecrets — rules with a consuming trailing context
+// (boundaries instead of Python lookaround) must not lose the second secret
+// separated by one character. This used to be lost: the engine continued the search from
+// the end of the whole match, that is past the separator already eaten by the guard, and
+// the second secret stayed behind the start of the next search.
+func TestCorpusFindsAdjacentSecrets(t *testing.T) {
+	byName := ruleSet(t)
+	cases := []struct{ rule, text string }{
+		{"card", "4111 1111 1111 1111 5500 0000 0000 0004"},
+		{"card", "4111111111111111,5500000000000004"},
+		{"phone", "+1 415 555 0142 +1 415 555 0143"},
+		{"assignment", "password=" + "AbCdEf0123456789" + " token=" + "Zm9vYmFyQmF6UXV4"},
+	}
+	for _, c := range cases {
+		r, ok := byName[c.rule]
+		if !ok {
+			t.Errorf("rule %s is not in the rule set", c.rule)
+			continue
+		}
+		if spans := rules.Detect(c.text, []rules.Rule{r}); len(spans) != 2 {
+			t.Errorf("%s: want 2 spans in %q, got %+v", c.rule, c.text, spans)
 		}
 	}
 }

@@ -34,14 +34,11 @@ func Detect(text string, rs []Rule) []Span {
 		if !hasKeyword(lower, r.Keywords) {
 			continue
 		}
-		for _, m := range r.re.FindAllStringSubmatchIndex(text, -1) {
-			g := 2 * r.SecretGroup
-			// A group outside the pattern or one that did not take part in the match gives
-			// no bounds; zero-length bounds mean an empty match.
-			if g+1 >= len(m) || m[g] < 0 || m[g] == m[g+1] {
+		for _, m := range matches(r, text) {
+			start, end, ok := bounds(m, r.SecretGroup)
+			if !ok {
 				continue
 			}
-			start, end := m[g], m[g+1]
 			matched := text[start:end]
 			if r.Kind == "entropy" && Shannon(matched) < r.EntropyMin {
 				continue
@@ -56,6 +53,75 @@ func Detect(text string, rs []Rule) []Span {
 		}
 	}
 	return Merge(spans)
+}
+
+// matches finds the matches of a rule, continuing the search from the end of the secret group,
+// and not from the end of the whole match.
+//
+// For rules with a consuming trailing context (boundaries instead of lookaround,
+// which RE2 lacks) the end of the match lies past the separator: `card` with
+// `(?:[^\d.]|$)` eats the comma between numbers, `assignment` — the space after
+// the value. FindAll would continue the search after this character, and the second secret across
+// one separator would stay unnoticed. The end of the group, when there is no
+// the trailing context coincides with the end of the match, so for the remaining
+// rules the behaviour is the same.
+//
+// ponytail: the search window starts one character before resume — the leading context of the rule
+// ((?:^|[^\w]), \b) needs a character before the match, — so on the rule
+// costs O(number of matches × length of the text). For tool output this
+// is enough; on streaming megabytes, go back to a single FindAll plus a point
+// check of the tails.
+func matches(r Rule, text string) [][]int {
+	var out [][]int
+	for resume := 0; resume <= len(text); {
+		m := nextMatch(r.re, text, max(0, resume-1))
+		if m == nil {
+			break
+		}
+		// The next search must start past the previous one: without that an empty
+		// or a missing group would spin the loop in place.
+		_, end, ok := bounds(m, r.SecretGroup)
+		if !ok || end <= resume {
+			end = max(m[1], resume+1)
+		}
+		out = append(out, m)
+		resume = end
+	}
+	return out
+}
+
+// bounds returns the bounds of the secret group in the match. ok = false if the group is not
+// in the pattern, it did not take part in the match, or it is empty — there is nothing to mask.
+func bounds(m []int, group int) (start, end int, ok bool) {
+	g := 2 * group
+	if g+1 >= len(m) || m[g] < 0 || m[g] == m[g+1] {
+		return 0, 0, false
+	}
+	return m[g], m[g+1], true
+}
+
+// nextMatch returns the first match of the text starting no earlier than base.
+//
+// A match exactly at the window boundary is dropped and the window shifts: `^` there
+// would match the start of the slice rather than of the text. The dropped match starts
+// inside the previous group (one character to the left), that is, it is already covered —
+// FindAll did not return it either. The shift does not lose matches from the same window:
+// the FindAll list does not overlap and goes in ascending start.
+func nextMatch(re *regexp.Regexp, text string, base int) []int {
+	for ; base <= len(text); base++ {
+		for _, m := range re.FindAllStringSubmatchIndex(text[base:], -1) {
+			if base > 0 && m[0] == 0 {
+				continue
+			}
+			for i, off := range m {
+				if off >= 0 {
+					m[i] = off + base
+				}
+			}
+			return m
+		}
+	}
+	return nil
 }
 
 // hasKeyword reports whether the text passes the prefilter of the rule. An empty

@@ -208,3 +208,57 @@ func TestDetectIgnoresEnabledFlag(t *testing.T) {
 		t.Fatalf("a disabled rule passed explicitly must fire: %+v", spans)
 	}
 }
+
+// Detect continues the scan from the end of the secret group, not from the end of the whole
+// the match: the right-boundary guard in RE2 is a consuming character (lookahead
+// missing in RE2), and if the next search starts after it, the second secret across
+// one separator is lost. For rules without a trailing context the end of the group and
+// the end of the match coincide, so their behaviour must stay the same.
+func TestDetectFindsSecretsSeparatedByOneChar(t *testing.T) {
+	tail, err := rules.Compile(rules.Spec{
+		ID: "tail", Type: "SECRET", Kind: "regex",
+		Pattern:     `(?:^|[^\w])(s\d{3})(?:[^\w]|$)`,
+		SecretGroup: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := rules.Compile(rules.Spec{
+		ID: "plain", Type: "SECRET", Kind: "regex",
+		Pattern: `s\d{3}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span := func(start, end int, rule string) rules.Span {
+		return rules.Span{Start: start, End: end, Type: "SECRET", Rule: rule}
+	}
+	cases := []struct {
+		name string
+		rule rules.Rule
+		text string
+		want []rules.Span
+	}{
+		{"comma", tail, "s111,s222", []rules.Span{span(0, 4, "tail"), span(5, 9, "tail")}},
+		{"space", tail, "s111 s222", []rules.Span{span(0, 4, "tail"), span(5, 9, "tail")}},
+		// Three secrets in a row: loop progress with no duplicates and no spinning in place.
+		{"three in a row", tail, "s111,s222,s333",
+			[]rules.Span{span(0, 4, "tail"), span(5, 9, "tail"), span(10, 14, "tail")}},
+		// Control: without the trailing context the number of spans did not change.
+		{"no tail", plain, "s111,s222,s333",
+			[]rules.Span{span(0, 4, "plain"), span(5, 9, "plain"), span(10, 14, "plain")}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := rules.Detect(c.text, []rules.Rule{c.rule})
+			if len(got) != len(c.want) {
+				t.Fatalf("got %+v, want %+v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("span %d: got %+v, want %+v", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
