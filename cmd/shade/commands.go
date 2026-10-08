@@ -123,7 +123,10 @@ func checkDir(dir string) error {
 //
 // An unfamiliar flag is an error: a flag accepted and ignored would read as
 // supported. A value starting with a dash is too: otherwise `--name --global`
-// would swallow --global as the rule name.
+// would swallow --global as the rule name. For such values there is the form
+// `--flag=value`: it separates the value at the first "=" and is therefore good for
+// a pattern starting with a dash (`-{5}BEGIN`), — the separate form counts it as
+// the next flag.
 func parseFlags(args []string, strs map[string]*string, bools map[string]*bool) ([]string, error) {
 	var pos []string
 	for i := 0; i < len(args); i++ {
@@ -132,13 +135,21 @@ func parseFlags(args []string, strs map[string]*string, bools map[string]*bool) 
 			pos = append(pos, arg)
 			continue
 		}
-		if p, ok := bools[arg]; ok {
+		name, value, joined := strings.Cut(arg, "=")
+		if p, ok := bools[name]; ok {
+			if joined {
+				return nil, fmt.Errorf("%s does not take a value", name)
+			}
 			*p = true
 			continue
 		}
-		p, ok := strs[arg]
+		p, ok := strs[name]
 		if !ok {
 			return nil, fmt.Errorf("unknown flag %q", arg)
+		}
+		if joined {
+			*p = value
+			continue
 		}
 		i++
 		if i == len(args) || strings.HasPrefix(args[i], "-") {

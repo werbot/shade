@@ -121,7 +121,8 @@ func (s *Store) ListRules(ctx context.Context, projectID *int64) ([]RuleRow, err
 // AddRule adds a rule to the scope of projectID (nil — global).
 // Adding a rule with the same name in the same scope again updates
 // the row: uniqueness is held by partial indexes, and a bare INSERT would fail on
-// them an error that the user would not understand.
+// them an error that the user would not understand. The exception is a builtin rule:
+// its row is not updated but rejected (see below).
 func (s *Store) AddRule(ctx context.Context, projectID *int64, r rules.Spec) error {
 	if r.ID == "" {
 		return errors.New("rule name is not set")
@@ -133,6 +134,22 @@ func (s *Store) AddRule(ctx context.Context, projectID *int64, r rules.Spec) err
 	allowlist, err := jsonList(r.Allowlist)
 	if err != nil {
 		return fmt.Errorf("rule %q: allowlist: %w", r.ID, err)
+	}
+	// The upsert below spares no builtin row: ruleAssign carries over pattern,
+	// type, order_idx and resets builtin, while SeedBuiltin no longer has the original
+	// would return — it skips taken names. A rule that used to catch a secret
+	// dies for good, and the value leaves open. The check lives here, and not
+	// into the CLI: every caller meets in AddRule — add, import and SeedBuiltin.
+	var builtin bool
+	cond, args := scopeCond(projectID)
+	err = s.db.QueryRowContext(ctx,
+		`SELECT builtin FROM rules WHERE name = ? AND `+cond,
+		append([]any{r.ID}, args...)...).Scan(&builtin)
+	switch {
+	case err == nil && builtin:
+		return fmt.Errorf("rule %q is builtin: it can be disabled, but not replaced — pick another name", r.ID)
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("rule %q: %w", r.ID, err)
 	}
 	// The conflict target must match the partial index together with its
 	// WHERE — otherwise SQLite answers "ON CONFLICT clause does not match any

@@ -1,9 +1,11 @@
 package store_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/werbot/shade/internal/rules"
+	"github.com/werbot/shade/internal/store"
 )
 
 func TestRulesForProjectMergesGlobalAndProject(t *testing.T) {
@@ -213,5 +215,86 @@ func TestRemoveRuleDeletesNonBuiltin(t *testing.T) {
 		if r.Name == "doomed" {
 			t.Fatal("rule was not deleted")
 		}
+	}
+}
+
+// ruleSnap is a snapshot of a rule row: the fields that an upsert would rewrite, and
+// the mark of a builtin one. Comparing before and after the rejection catches a change of any.
+type ruleSnap struct {
+	Type, Kind, Pattern string
+	OrderIdx            int
+	Builtin, Enabled    bool
+}
+
+func snapshotRule(t *testing.T, s *store.Store, name string) ruleSnap {
+	t.Helper()
+	var snap ruleSnap
+	err := s.DB().QueryRow(`SELECT type, kind, pattern, order_idx, builtin, enabled
+		FROM rules WHERE name = ? AND project_id IS NULL`, name).
+		Scan(&snap.Type, &snap.Kind, &snap.Pattern, &snap.OrderIdx, &snap.Builtin, &snap.Enabled)
+	if err != nil {
+		t.Fatalf("snapshot of rule %q: %v", name, err)
+	}
+	return snap
+}
+
+// An insert on top of a builtin row is rejected: without the guard the upsert would rewrite
+// pattern, type and order_idx and reset builtin, while SeedBuiltin no longer has the original
+// would not return. A rule that used to catch a secret would die for good.
+func TestAddRuleRefusesToOverwriteBuiltin(t *testing.T) {
+	st := openTemp(t)
+	if err := st.SeedBuiltin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotRule(t, st, "assignment")
+
+	err := st.AddRule(ctx, nil, rules.Spec{ID: "assignment", Type: "HOST",
+		Kind: "regex", Pattern: `zzz`, Order: 99, Enabled: false})
+	if err == nil {
+		t.Fatal("a builtin rule must not be replaced")
+	}
+	if !strings.Contains(err.Error(), "assignment") || !strings.Contains(err.Error(), "builtin") {
+		t.Fatalf("the error does not explain the rejection: %v", err)
+	}
+	if after := snapshotRule(t, st, "assignment"); after != before {
+		t.Fatalf("the builtin rule row changed:\nwas  %+v\nnow  %+v", before, after)
+	}
+
+	// The ban is narrow: a custom rule is still updated.
+	for _, pattern := range []string{`OLD`, `NEW`} {
+		if err := st.AddRule(ctx, nil, rules.Spec{ID: "mine", Type: "SECRET",
+			Kind: "regex", Pattern: pattern, Enabled: true}); err != nil {
+			t.Fatalf("a custom rule must be updated: %v", err)
+		}
+	}
+	if got := snapshotRule(t, st, "mine"); got.Pattern != "NEW" {
+		t.Fatalf("the custom rule upsert is broken: %+v", got)
+	}
+}
+
+// Seeding into a clean store is not touched by the guard: SeedBuiltin calls AddRule only
+// for names that are not in the global scope yet. The check counts rows, and not
+// relies on reasoning.
+func TestSeedBuiltinStillFillsEmptyStore(t *testing.T) {
+	st := openTemp(t)
+	if err := st.SeedBuiltin(ctx); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	specs, err := rules.Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.ListRules(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := 0
+	for _, row := range rows {
+		if row.Builtin {
+			seeded++
+		}
+	}
+	if seeded != len(specs) {
+		t.Fatalf("seeded %d builtin rules out of %d", seeded, len(specs))
 	}
 }

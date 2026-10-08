@@ -143,7 +143,7 @@ func runRulesAdd(args []string, stdio IO) int {
 	secretGroup := 0
 	if group != "" {
 		n, err := strconv.Atoi(group)
-		if err != nil || n < 0 {
+		if err != nil {
 			return fail(stdio, name, 2, fmt.Errorf("--secret-group: %q — not an integer", group))
 		}
 		secretGroup = n

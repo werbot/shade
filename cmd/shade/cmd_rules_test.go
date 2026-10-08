@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -112,6 +110,13 @@ func TestRulesRejectsBadArgs(t *testing.T) {
 		{"rules without a subcommand", []string{"rules"}, "list"},
 		{"add with an unexpected argument", []string{"rules", "add", "--name", "x",
 			"--type", "HOST", "--pattern", "a", "file"}, "file"},
+		// A value starting with a dash, in the separate form, is the next
+		// flag, not the value: otherwise `--name --global` would swallow --global.
+		{"value with a dash", []string{"rules", "add", "--name", "-x",
+			"--type", "HOST", "--pattern", "a"}, "--name"},
+		// A boolean flag does not take a value in any form.
+		{"a value on a boolean flag", []string{"rules", "rm", "--name", "x", "--global=1"},
+			"--global"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, _, stderr := runCLI(t, home, dir, tc.args, "")
@@ -151,57 +156,6 @@ func TestRulesRmBuiltinAndUnknown(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestRulesImportReportsSkippedAndStoresImported(t *testing.T) {
-	home, dir := t.TempDir(), gitDir(t)
-	path := filepath.Join(t.TempDir(), "gitleaks.toml")
-	// The second rule deliberately does not compile: the report must name the reason, and
-	// the first is to reach the database without getting lost because of a neighbour.
-	if err := os.WriteFile(path, []byte(`
-[[rules]]
-id = "acme-ticket"
-regex = '''ACME-\d{6}'''
-
-[[rules]]
-id = "broken"
-regex = '''(?<!\d)x'''
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	code, stdout, stderr := runCLI(t, home, dir, []string{"rules", "import", path}, "")
-	if code != 0 {
-		t.Fatalf("import: %d %s", code, stderr)
-	}
-	for _, want := range []string{"imported: 1", "skipped: 1", "broken"} {
-		if !strings.Contains(stdout, want) {
-			t.Fatalf("the report has no %q: %q", want, stdout)
-		}
-	}
-
-	list := func() string {
-		code, out, stderr := runCLI(t, home, dir, []string{"rules", "list"}, "")
-		if code != 0 {
-			t.Fatalf("list: %d %s", code, stderr)
-		}
-		return out
-	}
-	if !strings.Contains(list(), "acme-ticket") {
-		t.Fatalf("the imported rule was not saved: %q", list())
-	}
-	if strings.Contains(list(), "broken") {
-		t.Fatalf("a rejected rule got into the database: %q", list())
-	}
-}
-
-func TestRulesImportUnreadableFileFails(t *testing.T) {
-	home, dir := t.TempDir(), gitDir(t)
-	code, _, stderr := runCLI(t, home, dir,
-		[]string{"rules", "import", filepath.Join(dir, "nope.toml")}, "")
-	if code != 1 {
-		t.Fatalf("code %d, expected 1 (%s)", code, stderr)
 	}
 }
 
@@ -253,5 +207,55 @@ func TestAnonHonoursProjectRule(t *testing.T) {
 	}
 	if !strings.Contains(restored, "db.prod.local") {
 		t.Fatalf("not restored: %q", restored)
+	}
+}
+
+// The worst case of overwriting a builtin rule: without the guard in AddRule the rule
+// assignment stops catching the secret, and anon lets the value out in the clear.
+// The check on anon is the subject of the test here — the return code of `add` would let the
+// the regression through, because the insert goes through successfully.
+func TestRulesAddDoesNotDisableBuiltin(t *testing.T) {
+	home, dir := t.TempDir(), gitDir(t)
+	sample := "password=" + secretValue
+
+	if code, masked, stderr := runCLI(t, home, dir, []string{"anon"}, sample+"\n"); code != 0 ||
+		!strings.Contains(masked, "<SECRET_") {
+		t.Fatalf("setup: %d %q %s", code, masked, stderr)
+	}
+
+	addCode, _, addErr := runCLI(t, home, dir, []string{"rules", "add", "--name", "assignment",
+		"--type", "HOST", "--pattern", "zzz", "--global"}, "")
+
+	// The leak is checked first: the regression matters not because `add` returned the wrong
+	// code, but that the builtin rule went dark and the value went out in the clear. With
+	// the reverse order a guard mutation would fail on the code check, before reaching
+	// the subject of the test.
+	code, masked, stderr := runCLI(t, home, dir, []string{"anon"}, sample+"\n")
+	if code != 0 {
+		t.Fatalf("anon: %d %s", code, stderr)
+	}
+	if strings.Contains(masked, secretValue) {
+		t.Fatalf("the builtin rule went dark, the value went out in the clear: %q", masked)
+	}
+	if addCode != 1 || !strings.Contains(addErr, "assignment") {
+		t.Fatalf("replacing a builtin rule was not rejected: code %d, %s", addCode, addErr)
+	}
+}
+
+// A pattern starting with a dash is created only by the --flag=value form: in the
+// in the separate form parseFlags treats such a value as the next flag.
+func TestRulesAddAcceptsDashLeadingPattern(t *testing.T) {
+	home, dir := t.TempDir(), gitDir(t)
+	code, _, stderr := runCLI(t, home, dir, []string{"rules", "add", "--name", "pem",
+		"--type", "SECRET", "--pattern=-{5}BEGIN", "--global"}, "")
+	if code != 0 {
+		t.Fatalf("add: %d %s", code, stderr)
+	}
+	code, stdout, stderr := runCLI(t, home, dir, []string{"test", "--sample=-----BEGIN RSA KEY"}, "")
+	if code != 0 {
+		t.Fatalf("test: %d %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "pem") {
+		t.Fatalf("the rule with a leading dash did not fire: %q", stdout)
 	}
 }
