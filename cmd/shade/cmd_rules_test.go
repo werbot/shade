@@ -28,7 +28,6 @@ func TestRulesAddIsRejectedIfRegexDoesNotCompile(t *testing.T) {
 
 // addAcme creates a user rule in the given scope. Shared across tests,
 // where the rule is setup, not the subject of the check.
-
 func addAcme(t *testing.T, home, dir string, global bool) {
 	t.Helper()
 	args := []string{"rules", "add", "--name", "acme", "--type", "TICKET",
@@ -64,7 +63,6 @@ func TestRulesAddThenListThenDisable(t *testing.T) {
 // be visible to `shade test`. Without it an implementation that never reads the database
 // would pass the whole set: a disabled rule is absent from memory exactly as it
 // is not in the output.
-
 func TestSelfTestShowsEnabledUserRule(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	addAcme(t, home, dir, true)
@@ -81,7 +79,6 @@ func TestSelfTestShowsEnabledUserRule(t *testing.T) {
 
 // A rule added without --global lives in the current project: in its own directory
 // visible, in another it is not.
-
 func TestRulesAddedWithoutGlobalIsProjectScoped(t *testing.T) {
 	home, dir, other := t.TempDir(), gitDir(t), gitDir(t)
 	addAcme(t, home, dir, false)
@@ -136,7 +133,6 @@ func TestRulesRejectsBadArgs(t *testing.T) {
 // rm refuses a builtin rule and a typo in the name, and both refusals must
 // reach the user in words: a builtin rule can be disabled, but not
 // is deleted, whereas a name not found is a typo, not a database failure.
-
 func TestRulesRmBuiltinAndUnknown(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	for _, tc := range []struct {
@@ -163,9 +159,10 @@ func TestRulesRmBuiltinAndUnknown(t *testing.T) {
 	}
 }
 
-// export takes the active set and drops the builtin rules: a builtin
-// rule set restores itself, while in a file it would be dead weight.
-
+// End-to-end path "rule from the DB → anonymization → restoration".
+// Internal hosts are not caught by the builtin rule set: the user adds them.
+// The input is a line with the host itself: the original fixture of the plan had none, and
+// the HOST rule had nothing to fire on.
 func TestAnonHonoursProjectRule(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	if code, _, stderr := runCLI(t, home, dir, []string{"rules", "add", "--name",
@@ -193,11 +190,8 @@ func TestAnonHonoursProjectRule(t *testing.T) {
 	}
 }
 
-// The worst case of overwriting a builtin rule: without the guard in AddRule the rule
-// assignment stops catching the secret, and anon lets the value out in the clear.
-// The check on anon is the subject of the test here — the return code of `add` would let the
-// the regression through, because the insert goes through successfully.
-
+// A pattern starting with a dash is created only by the --flag=value form: in the
+// in the separate form parseFlags treats such a value as the next flag.
 func TestRulesAddAcceptsDashLeadingPattern(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	code, _, stderr := runCLI(t, home, dir, []string{"rules", "add", "--name", "pem",
@@ -212,34 +206,6 @@ func TestRulesAddAcceptsDashLeadingPattern(t *testing.T) {
 	if !strings.Contains(stdout, "pem") {
 		t.Fatalf("the rule with a leading dash did not fire: %q", stdout)
 	}
-}
-
-// listLines returns all `rules list` output rows for the named rule: the same
-// a name can sit in two scopes at once, and the scope check must see both.
-// The table columns are the command's contract, and reading them as text is cheaper than
-// open the database the second way.
-func listLines(t *testing.T, home, dir, rule string) []string {
-	t.Helper()
-	code, stdout, stderr := runCLI(t, home, dir, []string{"rules", "list"}, "")
-	if code != 0 {
-		t.Fatalf("rules list: %d %s", code, stderr)
-	}
-	var out []string
-	for _, line := range strings.Split(stdout, "\n") {
-		if fields := strings.Split(line, "\t"); fields[0] == rule {
-			out = append(out, line)
-		}
-	}
-	if len(out) == 0 {
-		t.Fatalf("the rule %q is missing from the list: %q", rule, stdout)
-	}
-	return out
-}
-
-// listLine returns the first row: global rows come before project ones.
-func listLine(t *testing.T, home, dir, rule string) string {
-	t.Helper()
-	return listLines(t, home, dir, rule)[0]
 }
 
 // The builtin rule guard is narrowed by scope, not by name: a same-named rule

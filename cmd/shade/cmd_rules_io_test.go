@@ -58,10 +58,8 @@ func TestRulesImportUnreadableFileFails(t *testing.T) {
 	}
 }
 
-// listLine returns the `rules list` output row for the named rule: the columns
-// of the table are the command's contract, and checking them as text is cheaper than opening the database
-// the second way.
-
+// export takes the active set and drops the builtin rules: a builtin
+// rule set restores itself, while in a file it would be dead weight.
 func TestRulesExportDropsBuiltin(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	addAcme(t, home, dir, true)
@@ -80,7 +78,42 @@ func TestRulesExportDropsBuiltin(t *testing.T) {
 	}
 }
 
-// End-to-end path "rule from the DB → anonymization → restoration".
-// Internal hosts are not caught by the builtin rule set: the user adds them.
-// The input is a line with the host itself: the original fixture of the plan had none, and
-// the HOST rule had nothing to fire on.
+// listLine returns the `rules list` output row for the named rule: the columns
+// of the table are the command's contract, and checking them as text is cheaper than opening the database
+// the second way.
+func listLine(t *testing.T, home, dir, rule string) string {
+	t.Helper()
+	code, stdout, stderr := runCLI(t, home, dir, []string{"rules", "list"}, "")
+	if code != 0 {
+		t.Fatalf("rules list: %d %s", code, stderr)
+	}
+	for _, line := range strings.Split(stdout, "\n") {
+		if fields := strings.Split(line, "\t"); fields[0] == rule {
+			return line
+		}
+	}
+	t.Fatalf("the rule %q is missing from the list: %q", rule, stdout)
+	return ""
+}
+
+// listLines returns all `rules list` output rows for the named rule: the same
+// a name can sit in two scopes at once, and the scope check must see both.
+// The table columns are the command's contract, and reading them as text is cheaper than
+// open the database the second way.
+func listLines(t *testing.T, home, dir, rule string) []string {
+	t.Helper()
+	code, stdout, stderr := runCLI(t, home, dir, []string{"rules", "list"}, "")
+	if code != 0 {
+		t.Fatalf("rules list: %d %s", code, stderr)
+	}
+	var out []string
+	for _, line := range strings.Split(stdout, "\n") {
+		if fields := strings.Split(line, "\t"); fields[0] == rule {
+			out = append(out, line)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("the rule %q is missing from the list: %q", rule, stdout)
+	}
+	return out
+}

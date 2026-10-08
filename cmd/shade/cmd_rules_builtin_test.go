@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// Tests of the guard that forbids inserting over a builtin rule (Store.AddRule):
-// through `rules add` and through `rules import`. The guard is one for both commands, so both
-// the tests live together.
-
+// The worst case of overwriting a builtin rule: without the guard in AddRule the rule
+// assignment stops catching the secret, and anon lets the value out in the clear.
+// The check on anon is the subject of the test here — the return code of `add` would let the
+// the regression through, because the insert goes through successfully.
 func TestRulesAddDoesNotDisableBuiltin(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	sample := "password=" + secretValue
@@ -39,9 +39,9 @@ func TestRulesAddDoesNotDisableBuiltin(t *testing.T) {
 	}
 }
 
-// A pattern starting with a dash is created only by the --flag=value form: in the
-// in the separate form parseFlags treats such a value as the next flag.
-
+// Import with a name collision: a rule named after a builtin is a skip with a
+// with a reason, and not a refusal of the whole command or a rewrite of the builtin definition.
+// The neighbouring new rule is written at the same time.
 func TestRulesImportSkipsBuiltinCollision(t *testing.T) {
 	home, dir := t.TempDir(), gitDir(t)
 	path := filepath.Join(t.TempDir(), "gitleaks.toml")
