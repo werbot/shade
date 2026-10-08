@@ -115,6 +115,49 @@ func checkDir(dir string) error {
 	return nil
 }
 
+// parseFlags parses a command arguments against its flag description: strs are flags with
+// a value (the value is stored into the destination by pointer), bools are boolean flags.
+// Returns the positional arguments. The flag sets of the `rules` commands overlap,
+// and a copy of this loop per command would drift from its neighbours at the first
+// edit — and a divergence here means a silently accepted flag.
+//
+// An unfamiliar flag is an error: a flag accepted and ignored would read as
+// supported. A value starting with a dash is too: otherwise `--name --global`
+// would swallow --global as the rule name.
+func parseFlags(args []string, strs map[string]*string, bools map[string]*bool) ([]string, error) {
+	var pos []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			pos = append(pos, arg)
+			continue
+		}
+		if p, ok := bools[arg]; ok {
+			*p = true
+			continue
+		}
+		p, ok := strs[arg]
+		if !ok {
+			return nil, fmt.Errorf("unknown flag %q", arg)
+		}
+		i++
+		if i == len(args) || strings.HasPrefix(args[i], "-") {
+			return nil, fmt.Errorf("%s requires a value", arg)
+		}
+		*p = args[i]
+	}
+	return pos, nil
+}
+
+// noExtraArgs rejects positional arguments: a command that has none must not
+// must take a typo for a file.
+func noExtraArgs(pos []string) error {
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	return nil
+}
+
 // writeJSON prints the value to w. SetEscapeHTML(false): otherwise the angle brackets
 // the placeholders will go into unicode escape sequences and the output will stop
 // be readable by eye.

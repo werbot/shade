@@ -78,6 +78,17 @@ func (e *Engine) RootPath() string { return e.project.RootPath }
 // RuleCount returns the number of rules active in the engine's project.
 func (e *Engine) RuleCount() int { return len(e.ruleSet) }
 
+// Store hands out the engine's store: the `shade rules` commands edit rules directly.
+// A second store assembler in the CLI would duplicate EnsureHome → key → SeedBuiltin,
+// that is exactly the path on which `rules list` on a clean machine must be
+// seeded.
+func (e *Engine) Store() *store.Store { return e.store }
+
+// ProjectID — the project within whose boundaries the engine issues placeholders. It is
+// the default scope for `shade rules` without --global; resolving it in the CLI
+// again would mean repeating ProjectForPath in a second way.
+func (e *Engine) ProjectID() int64 { return e.project.ID }
+
 // build finishes the engine on top of an open store: it resolves the project of the
 // directory dir, seeds the builtin rule set and reads the active set.
 //

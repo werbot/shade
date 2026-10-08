@@ -194,9 +194,13 @@ func (s *Store) RemoveRule(ctx context.Context, projectID *int64, name string) e
 		return nil
 	}
 	// Nothing is deleted: the row is either builtin or absent altogether. We distinguish
-	// by builtin, so that the message explains what to do next.
+	// by builtin, so that the message explains what to do next. The name is substituted
+	// into the query just like in the DELETE above: without it the placeholder name stays
+	// unrelated, and instead of the cause the user gets a driver error.
 	var builtin bool
-	err = s.db.QueryRowContext(ctx, `SELECT builtin FROM rules WHERE name = ? AND `+cond, args...).Scan(&builtin)
+	err = s.db.QueryRowContext(ctx,
+		`SELECT builtin FROM rules WHERE name = ? AND `+cond,
+		append([]any{name}, args...)...).Scan(&builtin)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("rule %q not found", name)
