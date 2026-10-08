@@ -222,6 +222,12 @@ func TestAnonProjectFlagPicksAnotherProject(t *testing.T) {
 	if code, _, _ := runCLI(t, home, dir, []string{"deanon"}, masked); code != 3 {
 		t.Fatalf("deanon without --project: code %d, a value from another project", code)
 	}
+
+	// The --flag=value form must work the same as the separate one: the syntax
+	// one CLI cannot depend on which command parses the arguments.
+	if code, joined, _ := runCLI(t, home, dir, []string{"anon", "--project=" + other, file}, ""); code != 0 || joined != masked {
+		t.Fatalf("anon --project=DIR: code %d, %q versus %q", code, joined, masked)
+	}
 }
 
 // A valid directory is needed by the flag not for beauty: ProjectForPath would fall back to
@@ -268,6 +274,10 @@ func TestBadArgsExitTwo(t *testing.T) {
 		{"anon", "--nope"},
 		{"anon", "--project"},
 		{"anon", "a.txt", "b.txt"},
+		// A boolean flag does not take a value, and an empty directory is not a directory:
+		// both forms must be rejected by parsing, not reach the core.
+		{"anon", "--json=1"},
+		{"anon", "--project="},
 		{"deanon", "--nope"},
 		{"deanon", "a.txt", "b.txt"},
 	} {

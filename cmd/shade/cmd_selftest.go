@@ -85,8 +85,14 @@ func readSample(pos []string, sample string, stdin io.Reader) (string, error) {
 }
 
 // printSpans prints the found spans as a table: offset, type, rule,
-// fragment. The fragment is printed — both commands are local and debug, the text
-// the user sees their own. text is the one whose coordinates the spans are in.
+// fragment. text is the one whose coordinates the spans are in.
+//
+// The fragment is printed — both commands (`test` and `rules test`) are local and
+// debug, the user has just given the sample, and without the fragment
+// the question "what exactly did my rule catch" cannot be answered. This is a deliberate
+// exception to §11 of the spec ("types and rules, not values"), and it is limited
+// exactly this output: do not wire printSpans into the MCP `scan` tool from §9 —
+// MCP hands out text with tokens, not fragments.
 //
 // The fragment is printed via %q: a rule like ssh_key finds a multi-line
 // secret, and without escaping it would break the table into rows.

@@ -215,6 +215,22 @@ func TestDoctorRejectsArgs(t *testing.T) {
 	}
 }
 
+// version takes no arguments, just like doctor: an accepted and ignored
+// argument would read as supported, and `version extra` would return 0.
+func TestVersionRejectsArgs(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := runVersion(nil, IO{Out: &out, Err: &errb}); code != 0 {
+		t.Fatalf("without arguments: code %d (%s)", code, errb.String())
+	}
+	errb.Reset()
+	if code := runVersion([]string{"extra"}, IO{Out: &out, Err: &errb}); code != 2 {
+		t.Fatalf("code %d, expected 2 (%s)", code, errb.String())
+	}
+	if errb.Len() == 0 {
+		t.Fatal("code 2 without an explanation in stderr")
+	}
+}
+
 func TestHomeStatus(t *testing.T) {
 	t.Run("no directory", func(t *testing.T) {
 		status, err := homeStatus(filepath.Join(t.TempDir(), "nope"))

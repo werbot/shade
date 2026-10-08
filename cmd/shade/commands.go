@@ -75,29 +75,46 @@ type inputArgs struct {
 }
 
 // parseInputArgs parses the common command arguments: [--json] [--project DIR] [FILE].
+// The `--flag=value` form is accepted just as in parseFlags: two parsers of one
+// syntax two parsers of one CLI must not — `--rules=R` works, while
+// `--project=P` would be an "unknown flag".
 func parseInputArgs(args []string) (inputArgs, error) {
 	var a inputArgs
 	for i := 0; i < len(args); i++ {
-		switch arg := args[i]; {
-		case arg == "--json":
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			if a.path != "" {
+				return inputArgs{}, fmt.Errorf("unexpected argument %q", arg)
+			}
+			a.path = arg
+			continue
+		}
+		name, value, joined := strings.Cut(arg, "=")
+		switch name {
+		case "--json":
+			if joined {
+				return inputArgs{}, fmt.Errorf("%s does not take a value", name)
+			}
 			a.json = true
-		case arg == "--project":
-			i++
-			// A value starting with a dash is the next flag, not the
-			// directory: otherwise `--project --json` would silently swallow --json.
-			if i == len(args) || args[i] == "" || strings.HasPrefix(args[i], "-") {
+		case "--project":
+			if !joined {
+				i++
+				// A value starting with a dash is the next flag, not the
+				// directory: otherwise `--project --json` would silently swallow --json.
+				if i == len(args) || strings.HasPrefix(args[i], "-") {
+					return inputArgs{}, errors.New("--project requires a directory")
+				}
+				value = args[i]
+			}
+			if value == "" {
 				return inputArgs{}, errors.New("--project requires a directory")
 			}
-			if err := checkDir(args[i]); err != nil {
+			if err := checkDir(value); err != nil {
 				return inputArgs{}, fmt.Errorf("--project: %w", err)
 			}
-			a.project = args[i]
-		case strings.HasPrefix(arg, "-"):
-			return inputArgs{}, fmt.Errorf("unknown flag %q", arg)
-		case a.path == "":
-			a.path = arg
+			a.project = value
 		default:
-			return inputArgs{}, fmt.Errorf("unexpected argument %q", arg)
+			return inputArgs{}, fmt.Errorf("unknown flag %q", arg)
 		}
 	}
 	return a, nil
