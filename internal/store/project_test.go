@@ -40,6 +40,12 @@ func TestProjectForPathFallsBackToCwd(t *testing.T) {
 	}
 }
 
+func TestProjectForPathRejectsEmptyDir(t *testing.T) {
+	if _, err := s.ProjectForPath(ctx, ""); err == nil {
+		t.Fatal("an empty dir must be an error, not the project of the process working directory")
+	}
+}
+
 // project creates a project for a fresh directory in the shared store of the package:
 // every test gets its own project and its own counter of numbers.
 func project(t *testing.T) store.Project {

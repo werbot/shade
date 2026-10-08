@@ -60,12 +60,17 @@ func (s *Store) Allocate(ctx context.Context, projectID int64, typ string, value
 
 // Resolve returns the original value of the placeholder <typ_n> in the project.
 // If there is no such placeholder — ErrNoEntity.
+//
+// The mark last_seen_at is extended here as well: without it an entity that lives
+// only in the answers of the model, retention will prune it and restoration will start returning
+// ErrNoEntity instead of the value. We leave hits alone — it is the counter of value issues
+// into the prompt.
 func (s *Store) Resolve(ctx context.Context, projectID int64, typ string, n int) ([]byte, error) {
 	placeholder := placeholderOf(typ, int64(n))
 	var valueEnc []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT value_enc FROM entities WHERE project_id=? AND placeholder=?`,
-		projectID, placeholder).Scan(&valueEnc)
+		`UPDATE entities SET last_seen_at=? WHERE project_id=? AND placeholder=? RETURNING value_enc`,
+		time.Now().Unix(), projectID, placeholder).Scan(&valueEnc)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoEntity
 	}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,12 @@ type Project struct {
 // dir itself. A repeated call for the same root returns the same project,
 // so a subdirectory and the root do not split the numbering of placeholders.
 func (s *Store) ProjectForPath(ctx context.Context, dir string) (Project, error) {
+	// cmd.Dir = "" means the working directory of the process for os/exec, so
+	// an empty dir would silently bind the mapping to another project. In phase 2 cwd
+	// comes from the payload of the hook, where an empty value is a real scenario.
+	if dir == "" {
+		return Project{}, errors.New("project directory is not set")
+	}
 	root := repoRoot(ctx, dir)
 	p := Project{RootPath: root, Name: filepath.Base(root)}
 	// name is written again with the same value: otherwise ON CONFLICT DO NOTHING

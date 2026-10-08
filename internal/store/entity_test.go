@@ -124,6 +124,32 @@ func TestResolveReturnsOriginal(t *testing.T) {
 	}
 }
 
+func TestResolveProlongsLastSeenAtButNotHits(t *testing.T) {
+	p := project(t)
+	if _, err := s.Allocate(ctx, p.ID, "HOST", []byte("db.prod.local")); err != nil {
+		t.Fatal(err)
+	}
+	// we roll the marks back into the past, as if the entity had not been touched for ages
+	if _, err := s.DB().Exec(
+		`UPDATE entities SET last_seen_at=1, hits=1 WHERE project_id=?`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(ctx, p.ID, "HOST", 1); err != nil {
+		t.Fatal(err)
+	}
+	var lastSeenAt, hits int64
+	if err := s.DB().QueryRow(
+		`SELECT last_seen_at, hits FROM entities WHERE project_id=?`, p.ID).Scan(&lastSeenAt, &hits); err != nil {
+		t.Fatal(err)
+	}
+	if lastSeenAt <= 1 {
+		t.Fatalf("Resolve must extend last_seen_at, otherwise retention will prune a live entity: %d", lastSeenAt)
+	}
+	if hits != 1 {
+		t.Fatalf("Resolve must not change hits — that is the counter of issues into the prompt: %d", hits)
+	}
+}
+
 func TestResolveUnknownNumber(t *testing.T) {
 	p := project(t)
 	if _, err := s.Resolve(ctx, p.ID, "HOST", 99); !errors.Is(err, store.ErrNoEntity) {
