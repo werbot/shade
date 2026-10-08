@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/werbot/shade/internal/crypt"
+	"github.com/werbot/shade/internal/placeholder"
 )
 
 // ErrNoEntity means the project has no entity with that number.
@@ -84,9 +85,10 @@ func (s *Store) Resolve(ctx context.Context, projectID int64, typ string, n int)
 	return value, nil
 }
 
-// placeholderOf builds a placeholder: the type and the number joined by an underscore.
+// placeholderOf builds a placeholder: the type and the number joined by an underscore. The format
+// lives in one place — in the placeholder package.
 func placeholderOf(typ string, n int64) string {
-	return fmt.Sprintf("<%s_%d>", typ, n)
+	return placeholder.Format(typ, int(n))
 }
 
 // seenPlaceholder returns the placeholder already issued for the hash of the value,
