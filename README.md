@@ -193,6 +193,7 @@ a file argument or stdin, and accept `--project DIR`.
 | --- | --- |
 | `shade anon [--json] [--project DIR] [FILE]` | Replace secrets with placeholders |
 | `shade deanon [--json] [--project DIR] [FILE]` | Restore real values |
+| `shade hook` | Answer a Claude Code hook event read from stdin (always exits 0) |
 | `shade doctor` | Report the state of the environment without modifying it |
 | `shade test [--rules NAME] [--sample TEXT] [FILE]` | Run the active rule set against a sample, no writes |
 | `shade rules list` | List rules of the scope |
@@ -225,6 +226,11 @@ the response has a hole where a value should be — the text is blocked, the tok
 are listed on stderr, and under `--json` an empty `text` expresses the block.
 Under `fail_open_log` the same situation produces the partial text, a warning on
 stderr and exit `0`.
+
+`shade hook` is the exception to the table: it always exits `0`. A non-zero exit
+at Claude Code means "block" or "message the model", and a hook that failed must
+do neither — a runtime failure comes back as a `systemMessage` on stdout, and an
+unreadable payload is silence.
 
 An auxiliary write failure never changes the code: if the hit counter or the
 journal cannot be written, the result is still delivered and the failure is
