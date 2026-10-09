@@ -97,13 +97,14 @@ func mergeFile(c *Config, path string) error {
 	return nil
 }
 
-// MaxAgeDays is how many days fit in a time.Duration. Beyond that n*24h
+// maxAgeDays is how many days fit in a time.Duration. Beyond that n*24h
 // overflows int64 and gives a negative age.
-const MaxAgeDays = int64(math.MaxInt64) / int64(24*time.Hour)
+const maxAgeDays = int64(math.MaxInt64) / int64(24*time.Hour)
 
-// ParseAge converts an age like 30d into a duration. The unit d is a day: ages in
-// the CLI are given in days (`--older-than 30d`, `--since 7d`, `entities_ttl`), while
-// time.ParseDuration does not know such a unit.
+// ParseAge converts an age like 30d into a duration. The unit d is a day: ages are
+// given in days both by the CLI (`--older-than 30d`, `--since 7d`, `entities_ttl`) and
+// by the MCP `unresolved_report` tool (`since`), while time.ParseDuration does not
+// know such a unit.
 //
 // The overflow is checked explicitly, rather than relying on "nobody will
 // write such an age": a negative age in PruneEntities turns into a boundary in
@@ -118,8 +119,8 @@ func ParseAge(s string) (time.Duration, error) {
 	if err != nil || n < 0 {
 		return 0, fmt.Errorf("age %q: expected a number of days with a d suffix, for example 30d", s)
 	}
-	if int64(n) > MaxAgeDays {
-		return 0, fmt.Errorf("age %q: too large, %dd is the maximum", s, MaxAgeDays)
+	if int64(n) > maxAgeDays {
+		return 0, fmt.Errorf("age %q: too large, %dd is the maximum", s, maxAgeDays)
 	}
 	return time.Duration(n) * 24 * time.Hour, nil
 }

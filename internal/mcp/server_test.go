@@ -1,6 +1,8 @@
 package mcp_test
 
 import (
+	"context"
+	"errors"
 	"io"
 	"testing"
 
@@ -11,13 +13,18 @@ import (
 )
 
 // session brings up the server on an in-memory transport and returns the connected
-// client session. NewServer takes an Opener and a diagnostic writer, but this task
-// registers only the directive resource, so the server never calls either.
+// client session. It serves the resource tests, which call no tool. NewServer takes an
+// Opener and the tools it registers now need one, so the opener here fails with an
+// error: a tool reached through this helper reports that error instead of panicking on
+// a nil func. The tool tests use toolSession, which supplies a fake engine.
 func session(t *testing.T) *sdk.ClientSession {
 	t.Helper()
 	ctx := t.Context()
 
-	server := mcp.NewServer(t.TempDir(), nil, io.Discard)
+	noEngine := func(context.Context) (mcp.Engine, error) {
+		return nil, errors.New("session: no engine; the tool tests use toolSession")
+	}
+	server := mcp.NewServer(t.TempDir(), noEngine, io.Discard)
 	t1, t2 := sdk.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, t1, nil); err != nil {
 		t.Fatal(err)

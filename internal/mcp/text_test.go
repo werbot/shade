@@ -1,7 +1,9 @@
 package mcp_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -156,6 +158,51 @@ func TestDeanonymizePassesThroughUnderFailOpenLog(t *testing.T) {
 	want := []tokenWire{{Type: "HOST", Raw: "<HOST_9>"}}
 	if !slices.Equal(out.Unresolved, want) {
 		t.Errorf("unresolved: got %+v, want %+v", out.Unresolved, want)
+	}
+}
+
+// TestAnonymizeReportsRecordErrOnDiag pins the diag branch: a failed hit-counter write is
+// reported on the diagnostic writer — the same failure the CLI reports on stderr — while
+// the ready text is still delivered, and the diagnostic never reaches the answer.
+func TestAnonymizeReportsRecordErrOnDiag(t *testing.T) {
+	var diag bytes.Buffer
+	f := fakeEngine{secret: testSecret, token: testToken, recordErr: errors.New("counter write failed")}
+	cs := toolSessionDiag(t, t.TempDir(), f, &diag)
+	res := callTool(t, cs, "anonymize", map[string]any{"text": "mail " + testSecret})
+
+	if res.IsError {
+		t.Fatalf("a failed auxiliary write must not fail the tool: %s", rawResult(t, res))
+	}
+	if got := structured[anonWire](t, res).Text; got != "mail "+testToken {
+		t.Errorf("text: got %q, want the replaced text", got)
+	}
+	if got := diag.String(); !strings.Contains(got, "stats not recorded") || !strings.Contains(got, "counter write failed") {
+		t.Errorf("diag: got %q, want the stats warning", got)
+	}
+	if raw := rawResult(t, res); strings.Contains(raw, "counter write failed") {
+		t.Errorf("the diagnostic must not reach the answer: %s", raw)
+	}
+}
+
+// TestDeanonymizeReportsRecordErrOnDiag is the same property on the journal write: the
+// restored text is delivered and the warning goes to diag, not to the response.
+func TestDeanonymizeReportsRecordErrOnDiag(t *testing.T) {
+	var diag bytes.Buffer
+	f := fakeEngine{secret: testSecret, token: testToken, recordErr: errors.New("journal write failed")}
+	cs := toolSessionDiag(t, t.TempDir(), f, &diag)
+	res := callTool(t, cs, "deanonymize", map[string]any{"text": "mail " + testToken})
+
+	if res.IsError {
+		t.Fatalf("a failed auxiliary write must not fail the tool: %s", rawResult(t, res))
+	}
+	if got := structured[deanonWire](t, res).Text; got != "mail "+testSecret {
+		t.Errorf("text: got %q, want the restored text", got)
+	}
+	if got := diag.String(); !strings.Contains(got, "journal not recorded") || !strings.Contains(got, "journal write failed") {
+		t.Errorf("diag: got %q, want the journal warning", got)
+	}
+	if raw := rawResult(t, res); strings.Contains(raw, "journal write failed") {
+		t.Errorf("the diagnostic must not reach the answer: %s", raw)
 	}
 }
 

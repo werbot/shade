@@ -355,6 +355,10 @@ hook that failed must do neither — a runtime failure comes back as a
 `systemMessage` on stdout, and an unreadable payload is silence. Its own usage
 errors are not an exception: `shade hook` with a stray argument still exits `2`.
 
+`shade mcp` is the other exception: it has no code `3`. A `deanonymize` refusal
+is an `isError` tool result, not an exit code — the server stays up and answers
+the next call.
+
 An auxiliary write failure never changes the code: if the hit counter or the
 journal cannot be written, the result is still delivered and the failure is
 reported on stderr. A ready prompt or answer is worth more than a statistics row.

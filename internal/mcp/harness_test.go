@@ -35,6 +35,7 @@ type fakeEngine struct {
 	secret     string // the value Anonymize hides and Restore brings back
 	token      string // the placeholder that stands for it, e.g. <EMAIL_1>
 	unresolved []placeholder.Token
+	recordErr  error // an auxiliary write that failed; travels to Result.RecordErr
 	store      *store.Store
 	projectID  int64
 	root       string
@@ -46,13 +47,14 @@ func (f fakeEngine) Anonymize(_ context.Context, text string) (core.Result, erro
 	if out != text {
 		spans = append(spans, rules.Span{Type: "EMAIL", Rule: "email"})
 	}
-	return core.Result{Text: out, Spans: spans}, nil
+	return core.Result{Text: out, Spans: spans, RecordErr: f.recordErr}, nil
 }
 
 func (f fakeEngine) Restore(_ context.Context, text string) (core.Result, error) {
 	return core.Result{
 		Text:       strings.ReplaceAll(text, f.token, f.secret),
 		Unresolved: f.unresolved,
+		RecordErr:  f.recordErr,
 	}, nil
 }
 
@@ -80,9 +82,16 @@ func (f fakeEngine) Close() error        { return nil }
 // session. home is the state directory config.Load reads for deanonymize.
 func toolSession(t *testing.T, home string, f fakeEngine) *sdk.ClientSession {
 	t.Helper()
+	return toolSessionDiag(t, home, f, io.Discard)
+}
+
+// toolSessionDiag is toolSession with a caller-supplied diagnostic writer, for the tests
+// that pin where an auxiliary-write failure is reported.
+func toolSessionDiag(t *testing.T, home string, f fakeEngine, diag io.Writer) *sdk.ClientSession {
+	t.Helper()
 	ctx := t.Context()
 
-	server := mcp.NewServer(home, func(context.Context) (mcp.Engine, error) { return f, nil }, io.Discard)
+	server := mcp.NewServer(home, func(context.Context) (mcp.Engine, error) { return f, nil }, diag)
 	t1, t2 := sdk.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, t1, nil); err != nil {
 		t.Fatal(err)

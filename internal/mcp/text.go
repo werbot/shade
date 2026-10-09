@@ -62,9 +62,8 @@ func anonymize(ctx context.Context, open Opener, diag io.Writer, in textInput) (
 }
 
 // deanonymize restores the values. Under any policy but fail_open_log a text with an
-// unresolved token is blocked: isError marks the refusal while unresolved still names
-// the tokens — that is what the CLI expresses with exit 3. A failure of the journal
-// write does not take the answer away either; it goes to diag.
+// unresolved token is blocked — the refusal branch below says why. A failure of the
+// journal write does not take the answer away either; it goes to diag.
 func deanonymize(ctx context.Context, home string, open Opener, diag io.Writer, in textInput) (*sdk.CallToolResult, deanonOutput, error) {
 	e, err := open(ctx)
 	if err != nil {

@@ -49,7 +49,7 @@ nothing to the database:
 ```
 $ shade rules test --pattern 'AKIA[0-9A-Z]{16}' --type TOKEN --sample 'key=AKIAIOSFODNN7EXAMPLE'
 offset	type	rule	fragment
-4-20	TOKEN	adhoc	"IOSFODNN7EXAMPLE"
+4-24	TOKEN	adhoc	"AKIAIOSFODNN7EXAMPLE"
 ```
 
 A sample is given by `--sample` or as a file argument. The other defaults are
@@ -88,8 +88,8 @@ pair and replace just the value with `secret_group`.
 ```
 shade rules import gitleaks.toml [--global]
 imported: 1, skipped: 2
-skipped "lookahead": pattern "token(?=\s*=)": error parsing regexp: invalid or unsupported Perl syntax: `(?=`
-skipped "unknown-type": unknown type "NOPE"
+skipped "lookahead": rule "lookahead": pattern "token(?=\\s*=)": error parsing regexp: invalid or unsupported Perl syntax: `(?=`
+skipped "unknown-type": rule "unknown-type": unknown type "NOPE"
 ```
 
 The report is per rule and the run never stops at the first failure: a gitleaks
