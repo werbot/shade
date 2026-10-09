@@ -11,8 +11,17 @@ type textInput struct {
 
 // scanInput is the argument of scan: the text, and an optional rule to narrow the run to.
 type scanInput struct {
-	Text string `json:"text"`
+	Text string `json:"text" jsonschema:"the text to scan"`
 	Rule string `json:"rule,omitempty" jsonschema:"narrow the run to one rule of the active set"`
+}
+
+// rulesTestInput is the argument of rules_test: the pattern to check and the sample to run
+// it over, with the kind and type the CLI takes as flags.
+type rulesTestInput struct {
+	Pattern string `json:"pattern" jsonschema:"the rule pattern to check"`
+	Sample  string `json:"sample" jsonschema:"the text to run the pattern over"`
+	Kind    string `json:"kind,omitempty" jsonschema:"regex (default) or literal"`
+	Type    string `json:"type,omitempty" jsonschema:"placeholder type, SECRET by default"`
 }
 
 // spanInfo names a fragment found: its type and the rule that found it. The fragment and
@@ -26,6 +35,21 @@ type spanInfo struct {
 // where.
 type spansOutput struct {
 	Spans []spanInfo `json:"spans" jsonschema:"the fragments found, in the order they follow in the text"`
+}
+
+// rulesOutput is the answer of rules_list: every rule that applies to this project.
+type rulesOutput struct {
+	Rules []ruleInfo `json:"rules"`
+}
+
+// ruleInfo is one rule as listed: its name and type, whether it is enabled and builtin, and
+// the scope it lives in.
+type ruleInfo struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Enabled bool   `json:"enabled"`
+	Builtin bool   `json:"builtin"`
+	Scope   string `json:"scope" jsonschema:"global or project"`
 }
 
 // anonOutput is the answer of anonymize: the text with placeholders, and what was

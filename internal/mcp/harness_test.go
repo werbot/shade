@@ -121,6 +121,11 @@ type spanWire struct {
 	Rule string `json:"rule"`
 }
 
+// spansWire is the shared answer of the scan and rules_test tools.
+type spansWire struct {
+	Spans []spanWire `json:"spans"`
+}
+
 type deanonWire struct {
 	Text       string      `json:"text"`
 	Unresolved []tokenWire `json:"unresolved"`

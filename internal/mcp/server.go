@@ -55,6 +55,7 @@ func NewServer(home string, open Opener, diag io.Writer) *sdk.Server {
 		MIMEType:    "text/markdown",
 	}, readDirective)
 	addTextTools(srv, home, open, diag)
+	addRuleTools(srv, open)
 	return srv
 }
 

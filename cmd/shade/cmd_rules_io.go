@@ -10,11 +10,6 @@ import (
 	"github.com/werbot/shade/internal/rules"
 )
 
-// adHocRule is the name under which a rule from the `rules test` flags is compiled.
-// It does not get into the database, but a Compile error names the rule, and without a name
-// the message would just say "pattern ...".
-const adHocRule = "adhoc"
-
 // runRulesImport reads a gitleaks config and moves the rules into the chosen scope.
 // The report is printed in full: the user must see both what made it and what
 // the engine did not understand.
@@ -128,7 +123,7 @@ func runRulesTest(args []string, stdio IO) int {
 	}
 
 	rule, err := rules.Compile(rules.Spec{
-		ID: adHocRule, Type: ruleType, Kind: kind, Pattern: pattern, Enabled: true,
+		ID: rules.AdHocName, Type: ruleType, Kind: kind, Pattern: pattern, Enabled: true,
 	})
 	if err != nil {
 		return fail(stdio, name, 1, err)
