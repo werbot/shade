@@ -107,7 +107,10 @@ the length of the text.
 
 `shade init` installs the hooks and the skills, and from then on the session is
 shaded without you doing anything. It writes the plugin into `$SHADE_HOME/claude`
-and prints a diff of every settings file it touches:
+and prints what it changed:
+
+Every file appears as `path:` followed by the lines it adds (`+`) or removes
+(`-`), so a file that does not exist yet reads as fully added.
 
 ```
 $ shade init
@@ -117,9 +120,9 @@ $ shade init
 +{ ... }
 /Users/you/.shade/claude/hooks/hooks.json:
 +{ "hooks": { ... one entry per event ... } }
-/Users/you/.shade/claude/skills/shade/SKILL.md:
-+...
 /Users/you/.shade/claude/skills/shade-rules/SKILL.md:
++...
+/Users/you/.shade/claude/skills/shade/SKILL.md:
 +...
 /Users/you/.claude/settings.json:
 +{
