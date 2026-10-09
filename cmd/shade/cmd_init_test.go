@@ -71,7 +71,8 @@ func TestInitIsIdempotent(t *testing.T) {
 		t.Fatalf("the second run failed: code=%d", code)
 	}
 	// No line may begin with "+": a plain search for "+" anywhere would also match a
-	// temp path, and the second run legitimately still prints the trust reminder.
+	// temp path, while a diff marker can only come from a changed file — the second
+	// run is a no-op and prints no diff at all.
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "+") {
 			t.Fatalf("a second init must be a no-op: %s", out)

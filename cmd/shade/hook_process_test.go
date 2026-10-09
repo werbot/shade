@@ -98,7 +98,7 @@ func TestHookProcessContract(t *testing.T) {
 	home, repo, workDir := t.TempDir(), gitDir(t), t.TempDir()
 
 	t.Run("session start prints one document", func(t *testing.T) {
-		payload := fmt.Sprintf(`{"hook_event_name":"SessionStart","cwd":%q,"source":"startup"}`, repo)
+		payload := fmt.Sprintf(`{"hook_event_name":"SessionStart","cwd":%q}`, repo)
 		code, out, errOut := runHookProcess(t, bin, home, workDir, payload)
 		if code != 0 {
 			t.Fatalf("code=%d err=%q", code, errOut)
@@ -151,13 +151,16 @@ func TestHookProcessContract(t *testing.T) {
 	// The gate is the one response assembled from a prompt — the closest thing to raw
 	// input — so it gets the same process-level leak check as the tool output.
 	t.Run("prompt gate blocks without printing the value", func(t *testing.T) {
-		if err := os.WriteFile(filepath.Join(repo, ".shade.toml"),
+		// Its own project directory: the config file would otherwise stay in effect for
+		// the subtests that follow.
+		gateRepo := gitDir(t)
+		if err := os.WriteFile(filepath.Join(gateRepo, ".shade.toml"),
 			[]byte("prompt_gate = \"on\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		payload := fmt.Sprintf(
 			`{"hook_event_name":"UserPromptSubmit","cwd":%q,"prompt":"connect to ssh user@db.prod.local"}`,
-			repo)
+			gateRepo)
 		code, out, errOut := runHookProcess(t, bin, home, workDir, payload)
 		if code != 0 {
 			t.Fatalf("code=%d err=%q", code, errOut)
@@ -178,8 +181,9 @@ func TestHookProcessContract(t *testing.T) {
 	})
 
 	// The deny is the other response built from raw input: its reason comes from tokens
-	// found in a tool argument. The store is seeded first so a real value is in play —
-	// otherwise "no value in the answer" would be true for want of anything to leak.
+	// found in a tool argument. The store is seeded first and the argument carries the
+	// seeded tokens, so the values behind them are genuinely in play — a deny that
+	// printed the restored command would print db.prod.local and fail the canary below.
 	t.Run("pre tool use deny names tokens and no value", func(t *testing.T) {
 		seed := fmt.Sprintf(
 			`{"hook_event_name":"PostToolUse","cwd":%q,"tool_name":"Bash",`+
@@ -187,11 +191,12 @@ func TestHookProcessContract(t *testing.T) {
 		if code, _, errOut := runHookProcess(t, bin, home, workDir, seed); code != 0 {
 			t.Fatalf("seeding the store: code=%d err=%q", code, errOut)
 		}
-		// fail_closed is the default: <USER_1> resolves, <HOST_9> does not, and the
-		// call is denied with the tokens named and the value behind <USER_1> withheld.
+		// fail_closed is the default: <USER_1> and <HOST_1> resolve to the seeded
+		// values, <HOST_9> does not, so the call is denied and only the unresolved
+		// token is named — the restored command must not appear anywhere.
 		payload := fmt.Sprintf(
 			`{"hook_event_name":"PreToolUse","cwd":%q,"tool_name":"Bash",`+
-				`"tool_input":{"command":"ssh <USER_1>@<HOST_9>"}}`, repo)
+				`"tool_input":{"command":"ssh <USER_1>@<HOST_1>","description":"check <HOST_9>"}}`, repo)
 		code, out, errOut := runHookProcess(t, bin, home, workDir, payload)
 		if code != 0 {
 			t.Fatalf("code=%d err=%q", code, errOut)
@@ -205,10 +210,11 @@ func TestHookProcessContract(t *testing.T) {
 		if !strings.Contains(out, "<HOST_9>") {
 			t.Fatalf("the deny must name the unresolved token: %q", out)
 		}
-		// <USER_1> was seeded, so it resolved and must not be listed: if the seed had
-		// failed, both tokens would be unresolved and the check above would still pass.
-		if strings.Contains(out, "<USER_1>") {
-			t.Fatalf("the seeded token did not resolve: %q", out)
+		// <USER_1> and <HOST_1> were seeded, so they resolved and must not be listed:
+		// if the seed had failed, they would be unresolved and the check above would
+		// still pass.
+		if strings.Contains(out, "<USER_1>") || strings.Contains(out, "<HOST_1>") {
+			t.Fatalf("a seeded token did not resolve: %q", out)
 		}
 		var doc map[string]any
 		if err := json.Unmarshal([]byte(out), &doc); err != nil {

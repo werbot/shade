@@ -52,8 +52,10 @@ func PluginFiles(shadeBin string) map[string][]byte {
 			// without it, and the failure is silent — init still reports success
 			// while the plugin never loads and no hook ever runs.
 			"owner": map[string]any{"name": MarketplaceName},
-			// description is only a `claude plugin validate` warning, but it costs
-			// one line and keeps the validate guard below free of noise.
+			// description silences the marketplace-level warning from
+			// `claude plugin validate`; the plugin.json warnings (version,
+			// description, author) are left in place, since a version would be a
+			// number nobody maintains.
 			"description": "shade: Claude Code hooks that mask secrets in tool output and restore them before a tool runs",
 			"plugins": []any{
 				map[string]any{"name": PluginName, "source": "./"},
