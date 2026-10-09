@@ -36,6 +36,7 @@ phone: +1 415 555 0132
 - [Security model](#security-model)
 - [Development](#development)
 - [Status](#status)
+- [License](#license)
 
 ## Why
 
@@ -392,4 +393,6 @@ adapters exist yet.
 Not implemented today: hook/MCP/proxy adapters, streaming mode, rule packages,
 a usage UI, and any LLM provider integration.
 
-No license file is present in this repository yet.
+## License
+
+MIT — see [LICENSE](LICENSE).
