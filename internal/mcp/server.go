@@ -41,8 +41,8 @@ var _ Engine = (*core.Engine)(nil)
 // there is exactly one project.
 type Opener func(ctx context.Context) (Engine, error)
 
-// NewServer builds the server and registers the directive resource. Tool
-// registration follows, each tool in its own function; this task adds none.
+// NewServer builds the server, registers the directive resource and the tools. Each
+// tool group is registered by its own function so this stays a list of what exists.
 //
 // home is the shade state directory the config for deanonymize is read from, and
 // diag receives diagnostics: stdout carries the protocol.
@@ -54,6 +54,7 @@ func NewServer(home string, open Opener, diag io.Writer) *sdk.Server {
 		Description: "The placeholder contract to hand the model",
 		MIMEType:    "text/markdown",
 	}, readDirective)
+	addTextTools(srv, home, open, diag)
 	return srv
 }
 
