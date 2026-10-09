@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/werbot/shade/internal/skills"
 )
 
 // oldHookSettings is a user settings file holding the hook shade replaces: the
@@ -54,6 +56,29 @@ func missing(t *testing.T, path string) {
 	}
 }
 
+// TestInitInstallsSkills: the skills travel with the plugin. They are what tells a
+// session to use shade, so a plugin installed without them is installed and inert.
+func TestInitInstallsSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home) // Claude Code reads HOME: without this the test edits the real one
+	repo := gitDir(t)
+
+	files := skills.Files()
+	if len(files) == 0 {
+		t.Fatal("skills.Files() is empty: this test would pass without installing anything")
+	}
+	code, _, errOut := runCLI(t, home, repo, []string{"init"}, "")
+	if code != 0 {
+		t.Fatalf("code=%d err=%s", code, errOut)
+	}
+	for name, want := range files {
+		path := filepath.Join(home, "claude", name)
+		if got := readFile(t, path); got != string(want) {
+			t.Errorf("%s holds %q, want the bytes of skills.Files() %q", path, got, want)
+		}
+	}
+}
+
 func TestInitIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home) // Claude Code reads HOME: without this the test edits the real one
@@ -76,6 +101,13 @@ func TestInitIsIdempotent(t *testing.T) {
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "+") {
 			t.Fatalf("a second init must be a no-op: %s", out)
+		}
+	}
+	// The skills are plugin files like any other: an unchanged one prints nothing.
+	// The "+" check above already covers their content, this one covers the path.
+	for name := range skills.Files() {
+		if strings.Contains(out, name) {
+			t.Fatalf("a second init must not touch %s: %s", name, out)
 		}
 	}
 }
