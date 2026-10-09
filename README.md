@@ -133,13 +133,12 @@ $ shade init
 +    "shade@shade": true
 +  }
 +}
-next Claude Code launch: confirm the shade plugin when asked, the hooks stay off until it is trusted
 ```
 
 The marketplace declaration always goes in the **user** settings, because Claude
 Code does not honour it in a project file; `enabledPlugins` goes to the project of
 the git root, or to the user settings under `--global`. The command is idempotent —
-a second run prints only the reminder — and `--dry-run` prints the same diff
+a second run prints nothing at all — and `--dry-run` prints the same diff
 without writing anything. `--keep-old-hook` leaves an existing `PostToolUse` hook
 in place, which is worth doing only if you want two rewrites on one event; shade
 removes it by default, since two of them are non-deterministic.
@@ -158,7 +157,7 @@ Two limits are worth knowing before you rely on it:
   the gate can only block it — and only when you turn it on. A secret pasted
   straight into the prompt reaches the model unless `prompt_gate = "on"` stops it.
   What is protected is what the tools bring back: files, command output, logs.
-- **Tool arguments are restored on trust.** The model writes those arguments, so a
+- **Tool arguments are restored optimistically.** The model writes those arguments, so a
   token it mangled is still matched; the other direction — tool output, which the
   outside world writes — is only ever anonymized.
 
