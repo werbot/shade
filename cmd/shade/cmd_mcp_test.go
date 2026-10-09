@@ -220,6 +220,32 @@ func TestMCPRejectsUnknownFlag(t *testing.T) {
 	}
 }
 
+// An explicitly empty --project is a call error, not a silent fallback to the working
+// directory: parseInputArgs answers the same input with exit 2 for every other command,
+// and two parsers of one syntax must not give two answers.
+func TestMCPRejectsEmptyProject(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"joined", []string{"mcp", "--project="}},
+		{"separate", []string{"mcp", "--project", ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out, errOut := runCLI(t, t.TempDir(), t.TempDir(), tc.args, "")
+			if code != 2 {
+				t.Fatalf("code=%d, want 2 (%s)", code, errOut)
+			}
+			if !strings.Contains(errOut, "--project requires a directory") {
+				t.Fatalf("stderr must name the problem: %q", errOut)
+			}
+			if out != "" {
+				t.Fatalf("stdout must stay empty, got %q", out)
+			}
+		})
+	}
+}
+
 // An unknown tool is a protocol error; the session survives it and the next call is
 // answered — the server must not die on a name it does not know.
 func TestMCPRejectsUnknownTool(t *testing.T) {

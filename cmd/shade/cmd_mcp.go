@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -32,6 +34,15 @@ func runMCP(args []string, stdio IO) int {
 	}
 	if err := noExtraArgs(pos); err != nil {
 		return fail(stdio, "mcp", 2, err)
+	}
+	// An explicitly empty --project is a call error, not a fallback to the working
+	// directory: parseInputArgs answers the same input with exit 2 for every other
+	// command, and a "project" that is really the cwd creates placeholder rows that
+	// nothing else can reach.
+	for _, arg := range args {
+		if name, _, _ := strings.Cut(arg, "="); name == "--project" && project == "" {
+			return fail(stdio, "mcp", 2, errors.New("--project requires a directory"))
+		}
 	}
 	if project != "" {
 		if err := checkDir(project); err != nil {
