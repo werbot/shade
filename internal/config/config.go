@@ -48,16 +48,18 @@ func Load(home, projectRoot string) (Config, error) {
 		if l.dir == "" {
 			continue
 		}
-		if err := mergeFile(&c, filepath.Join(l.dir, l.name)); err != nil {
+		path := filepath.Join(l.dir, l.name)
+		if err := mergeFile(&c, path); err != nil {
 			return Config{}, err
 		}
-	}
-	// A misspelled policy must be an error, not a silently off gate: on|off|auto
-	// guards against a leak, so a typo has to be visible.
-	switch c.PromptGate {
-	case "off", "on", "auto":
-	default:
-		return Config{}, fmt.Errorf("config prompt_gate: %q is not off, on or auto", c.PromptGate)
+		// Validated per layer, not after the merge: only here is the file the bad value
+		// came from still known. A typo in the global file stays an error even when the
+		// project file overrides it — the typo is real, and a gate that guards a leak fails loud.
+		switch c.PromptGate {
+		case "off", "on", "auto":
+		default:
+			return Config{}, fmt.Errorf("config %s: prompt_gate: %q is not off, on or auto", path, c.PromptGate)
+		}
 	}
 	return c, nil
 }
