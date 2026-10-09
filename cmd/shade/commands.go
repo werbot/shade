@@ -7,10 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -233,38 +231,6 @@ func openEngine(ctx context.Context, project string) (*core.Engine, error) {
 func fail(stdio IO, name string, code int, err error) int {
 	fmt.Fprintf(stdio.Err, "%s: %v\n", name, err)
 	return code
-}
-
-// defaultListLimit is how many rows the list commands print (`entities list`,
-// `audit`). The spec declares no flag for this, and unbounded output on a
-// a large project it is unreadable.
-const defaultListLimit = 100
-
-// maxAgeDays is how many days fit in a time.Duration. Beyond that n*24h
-// overflows int64 and gives a negative age.
-const maxAgeDays = int64(math.MaxInt64) / int64(24*time.Hour)
-
-// parseAge converts an age like 30d into a duration. The unit d is a day: ages in
-// the CLI are given in days (`--older-than 30d`, `--since 7d`, `entities_ttl`), while
-// time.ParseDuration does not know such a unit.
-//
-// The overflow is checked explicitly, rather than relying on "nobody will
-// write such an age": a negative age in PruneEntities turns into a boundary in
-// the future, and `--older-than 200000d` would wipe all entities of the project — the values
-// live only in value_enc, so the loss cannot be rolled back.
-func parseAge(s string) (time.Duration, error) {
-	days, ok := strings.CutSuffix(s, "d")
-	if !ok {
-		return 0, fmt.Errorf("age %q: expected a number of days with a d suffix, for example 30d", s)
-	}
-	n, err := strconv.Atoi(days)
-	if err != nil || n < 0 {
-		return 0, fmt.Errorf("age %q: expected a number of days with a d suffix, for example 30d", s)
-	}
-	if int64(n) > maxAgeDays {
-		return 0, fmt.Errorf("age %q: too large, %dd is the maximum", s, maxAgeDays)
-	}
-	return time.Duration(n) * 24 * time.Hour, nil
 }
 
 // stamp prints a moment from unix seconds in local time: the database stores time

@@ -26,6 +26,7 @@ phone: +1 415 555 0132
 - [Why](#-why)
 - [How it works](#-how-it-works)
 - [Claude Code](#-claude-code)
+- [MCP](#-mcp)
 - [Architecture](#-architecture)
 - [Install](#-install)
 - [Quick start](#-quick-start)
@@ -104,9 +105,12 @@ the length of the text.
 
 ## 🤖 Claude Code
 
-`shade init` installs the hooks, and from then on the session is shaded without
-you doing anything. It writes the plugin into `$SHADE_HOME/claude` and prints a
-diff of every settings file it touches:
+`shade init` installs the hooks and the skills, and from then on the session is
+shaded without you doing anything. It writes the plugin into `$SHADE_HOME/claude`
+and prints what it changed:
+
+Every file appears as `path:` followed by the lines it adds (`+`) or removes
+(`-`), so a file that does not exist yet reads as fully added.
 
 ```
 $ shade init
@@ -116,6 +120,10 @@ $ shade init
 +{ ... }
 /Users/you/.shade/claude/hooks/hooks.json:
 +{ "hooks": { ... one entry per event ... } }
+/Users/you/.shade/claude/skills/shade-rules/SKILL.md:
++...
+/Users/you/.shade/claude/skills/shade/SKILL.md:
++...
 /Users/you/.claude/settings.json:
 +{
 +  "extraKnownMarketplaces": {
@@ -143,6 +151,11 @@ without writing anything. `--keep-old-hook` leaves an existing `PostToolUse` hoo
 in place, which is worth doing only if you want two rewrites on one event; shade
 removes it by default, since two of them are non-deterministic.
 
+The same `init` also installs the two skills into that plugin: `shade` hands the
+model the placeholder contract, and `shade-rules` explains how to write and test a
+rule. They live in the same directory as the hooks, so a skill and a hook cannot go
+out of step.
+
 | Event | What shade does |
 | --- | --- |
 | `SessionStart` | Registers the project and hands the model the directive that explains the tokens |
@@ -161,16 +174,52 @@ Two limits are worth knowing before you rely on it:
   token it mangled is still matched; the other direction — tool output, which the
   outside world writes — is only ever anonymized.
 
+## 🔌 MCP
+
+`shade mcp` serves the same engine to any MCP client over stdio:
+
+```
+$ shade mcp [--project DIR]
+```
+
+The client starts the process, so the project is resolved once, at startup: `--project
+DIR`, or the working directory of the process. A client that launches the server from
+`$HOME` would otherwise send every call to a "home directory" project that no other
+adapter can see.
+
+| Tool | Input | Output |
+| --- | --- | --- |
+| `anonymize` | `{text}` | `{text, spans:[{type, rule}]}` |
+| `deanonymize` | `{text}` | `{text, unresolved:[{type, raw}]}` |
+| `scan` | `{text, rule?}` | `{spans:[{type, rule}]}` |
+| `rules_list` | `{}` | `{rules:[{name, type, enabled, builtin, scope}]}` |
+| `rules_test` | `{pattern, sample, kind?, type?}` | `{spans:[{type, rule}]}` |
+| `unresolved_report` | `{since?, limit?}` | `{entries:[{time, adapter, type, action, detail}]}` |
+
+The resource `shade://directive` carries the placeholder contract, so the model reads it
+rather than receiving it in a prompt.
+
+**Tokens leave; values do not.** Every answer carries placeholders and types — never the
+value behind a token, and never the fragment or offset a rule matched. `deanonymize` is
+the one tool that returns real values: it restores whatever text it is handed. Under
+`fail_closed` a text with an unresolved placeholder is refused — `isError` with an empty
+`text`, the MCP spelling of exit code 3 — rather than handed over with a hole in it.
+
+Diagnostics go to stderr; stdout carries the protocol and nothing else.
+
 ## 🧱 Architecture
 
 ```mermaid
 flowchart TB
-    CLI["cmd/shade<br/>anon · deanon · hook · init · rules · entities · audit · test · doctor · version"]
+    CLI["cmd/shade<br/>anon · deanon · hook · init · mcp · rules · entities · audit · test · doctor · version"]
     CLI --> Core["internal/core<br/>Engine: Anonymize · Restore · Scan"]
     CLI --> Hook["internal/hook<br/>Claude Code events → responses"]
+    CLI --> MCP["internal/mcp<br/>six tools · shade://directive"]
     CLI --> Set["internal/settings<br/>settings.json · plugin files"]
     Hook --> Core
     Hook --> Dir["internal/directive<br/>the model directive"]
+    MCP --> Core
+    MCP --> Dir
     Core --> Rules["internal/rules<br/>compile · detect · merge · validators"]
     Core --> PH["internal/placeholder<br/>format · find · guard"]
     Core --> Store["internal/store<br/>SQLite, projects, entities, rules"]
@@ -183,6 +232,7 @@ flowchart TB
 | `cmd/shade` | CLI: argument parsing, command registry, exit codes, output shapes |
 | `internal/core` | `Engine` — glues rules, placeholders and the store into `Anonymize`/`Restore` |
 | `internal/hook` | The Claude Code adapter: event payloads, per-event responses, the JSON walker |
+| `internal/mcp` | The MCP adapter: the directive resource, and the tools the model calls |
 | `internal/settings` | Claude Code `settings.json`: load, merge, diff, and the plugin files |
 | `internal/directive` | The one text that tells the model how to treat the tokens |
 | `internal/rules` | Compiles rule specs, finds matches, merges spans, runs validators |
@@ -257,7 +307,8 @@ offset	type	rule	fragment
 `--json` gives a machine-readable shape — `{"text": ..., "spans": [{"type": ..., "rule": ...}]}`
 for `anon`, `{"text": ..., "unresolved": [...]}` for `deanon`. `anon`, `deanon`,
 `test` and `rules import` read a file argument or stdin and accept `--project DIR`;
-`hook` reads its event from stdin, and `init` takes neither.
+`hook` reads its event from stdin, `mcp` speaks the protocol on stdio, and `init`
+takes neither.
 
 ## 🧭 Command reference
 
@@ -266,7 +317,8 @@ for `anon`, `{"text": ..., "unresolved": [...]}` for `deanon`. `anon`, `deanon`,
 | `shade anon [--json] [--project DIR] [FILE]` | Replace secrets with placeholders |
 | `shade deanon [--json] [--project DIR] [FILE]` | Restore real values |
 | `shade hook` | Answer a Claude Code hook event read from stdin (always exits 0 for a hook event) |
-| `shade init [--global] [--dry-run] [--keep-old-hook]` | Install the Claude Code hooks: generate the plugin and wire it into the settings |
+| `shade init [--global] [--dry-run] [--keep-old-hook]` | Install the Claude Code hooks and skills: generate the plugin and wire it into the settings |
+| `shade mcp [--project DIR]` | Serve the MCP protocol on stdio for an MCP client |
 | `shade doctor` | Report the state of the environment without modifying it |
 | `shade test [--rules NAME] [--sample TEXT] [FILE]` | Run the active rule set against a sample, no writes |
 | `shade rules list` | List rules of the scope |
@@ -305,6 +357,10 @@ stderr and exit `0`.
 hook that failed must do neither — a runtime failure comes back as a
 `systemMessage` on stdout, and an unreadable payload is silence. Its own usage
 errors are not an exception: `shade hook` with a stray argument still exits `2`.
+
+`shade mcp` is the other exception: it has no code `3`. A `deanonymize` refusal
+is an `isError` tool result, not an exit code — the server stays up and answers
+the next call.
 
 An auxiliary write failure never changes the code: if the hit counter or the
 journal cannot be written, the result is still delivered and the failure is
@@ -466,18 +522,19 @@ from the standard library.
 
 ## 📌 Status
 
-Phases 1 and 2 are complete — the core and the CLI, then the Claude Code hook
-adapter. The rest is ahead of us; the code is already sliced for it.
+Phases 1–3 are complete — the core and the CLI, the Claude Code hook adapter, then the
+MCP adapter and the skills. The rest is ahead of us; the code is already sliced for it.
 
 - [x] Core engine — `Anonymize`, `Restore`, `Scan`
 - [x] Rule engine — keyword prefilter, entropy threshold, validators, span merging
 - [x] Encrypted store — projects, entities, audit journal, SQLite migrations
 - [x] Builtin rule set — 48 rules across `keys`, `credentials`, `pii`, `infra` (39 active by default)
 - [x] gitleaks rule import with a per-rule skip report
-- [x] CLI — `anon`, `deanon`, `hook`, `init`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
+- [x] CLI — `anon`, `deanon`, `hook`, `init`, `mcp`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
 - [x] Claude Code hooks — `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `MessageDisplay`, installed by `shade init`, which records `hook` as the adapter in the journal
-- [ ] MCP and proxy adapters — `core.Engine` already takes the adapter name, and only `cli` and `hook` reach it so far
-- [ ] MCP `scan` tool — `Engine.Scan` is the read-only path it would use
+- [x] Skills — `shade` and `shade-rules`, installed into the plugin by `shade init`
+- [x] MCP adapter — `shade mcp` serves six tools and the `shade://directive` resource over stdio; the proxy half of this item is phase 4
+- [x] MCP `scan` tool — reports the types and the rules that found them, never the fragment or the offset
 - [ ] Rule packages — the `packages` table exists; nothing writes to it yet
 - [ ] Usage UI — `rule_hits` is written on every anonymization; nothing reads it yet
 - [ ] Streaming mode and LLM provider integration — the config keys are declared but have no consumer

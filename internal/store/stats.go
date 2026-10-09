@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// DefaultListLimit is how many rows a list shows (`entities list`, `audit`, the
+// unresolved_report tool). The spec declares no flag for this, and unbounded output on a
+// large project is unreadable.
+const DefaultListLimit = 100
+
 // EntityInfo is a row of the project entity list. There is no field with the value here
 // on purpose: a leak is impossible by type, and not by discipline — and the query is
 // reads only these columns, value_enc never gets into it.

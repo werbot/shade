@@ -13,13 +13,14 @@ import (
 	"strings"
 
 	"github.com/werbot/shade/internal/settings"
+	"github.com/werbot/shade/internal/skills"
 	"github.com/werbot/shade/internal/store"
 )
 
 func init() {
 	Register(Command{
 		Name: "init",
-		Help: "install the claude code hooks",
+		Help: "install the claude code hooks and skills",
 		Run:  runInit,
 	})
 }
@@ -118,11 +119,13 @@ func runInit(args []string, stdio IO) int {
 	return 0
 }
 
-// installPlugin writes the plugin files under dir, showing the diff of each against
-// what is already on disk. A missing file counts as fully added, which is what a
-// first install should look like.
+// installPlugin writes the plugin files under dir — the hooks and manifest from
+// settings, the skills from internal/skills — showing the diff of each against what
+// is already on disk. A missing file counts as fully added, which is what a first
+// install should look like.
 func installPlugin(stdio IO, dir, shadeBin string, dryRun bool) error {
 	files := settings.PluginFiles(shadeBin)
+	maps.Copy(files, skills.Files())
 	for _, name := range slices.Sorted(maps.Keys(files)) {
 		path := filepath.Join(dir, name)
 		before, err := os.ReadFile(path)

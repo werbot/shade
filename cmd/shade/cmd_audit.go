@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/store"
 )
 
@@ -32,7 +33,7 @@ func runAudit(args []string, stdio IO) int {
 
 	filter := store.AuditFilter{Unresolved: unresolved}
 	if since != "" {
-		age, err := parseAge(since)
+		age, err := config.ParseAge(since)
 		if err != nil {
 			return fail(stdio, name, 2, err)
 		}
@@ -46,7 +47,7 @@ func runAudit(args []string, stdio IO) int {
 	}
 	defer e.Close()
 
-	entries, err := e.Store().Audit(ctx, e.ProjectID(), defaultListLimit, filter)
+	entries, err := e.Store().Audit(ctx, e.ProjectID(), store.DefaultListLimit, filter)
 	if err != nil {
 		return fail(stdio, name, 1, err)
 	}

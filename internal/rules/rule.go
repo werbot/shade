@@ -9,6 +9,15 @@ import (
 	"github.com/werbot/shade/internal/placeholder"
 )
 
+// AdHocName is the name under which a rule from the `rules test` flags is compiled. It
+// does not get into the database, but a Compile error names the rule, and without a name
+// the message would just say "pattern ...".
+//
+// It is exported because the name travels out of the rules_test MCP tool in the rule field
+// of every span: the CLI and the tool must agree on it, and two literals in two packages
+// would drift silently.
+const AdHocName = "adhoc"
+
 // Rule is a compiled rule: the spec plus ready-made regexes.
 type Rule struct {
 	Name        string
