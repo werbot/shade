@@ -198,7 +198,7 @@ rather than receiving it in a prompt.
 
 **Tokens leave; values do not.** Every answer carries placeholders and types — never the
 value behind a token, and never the fragment or offset a rule matched. `deanonymize` is
-the one tool that returns real values, and only for text the model produced. Under
+the one tool that returns real values: it restores whatever text it is handed. Under
 `fail_closed` a text with an unresolved placeholder is refused — `isError` with an empty
 `text`, the MCP spelling of exit code 3 — rather than handed over with a hole in it.
 
@@ -515,18 +515,19 @@ from the standard library.
 
 ## 📌 Status
 
-Phases 1 and 2 are complete — the core and the CLI, then the Claude Code hook
-adapter. The rest is ahead of us; the code is already sliced for it.
+Phases 1–3 are complete — the core and the CLI, the Claude Code hook adapter, then the
+MCP adapter and the skills. The rest is ahead of us; the code is already sliced for it.
 
 - [x] Core engine — `Anonymize`, `Restore`, `Scan`
 - [x] Rule engine — keyword prefilter, entropy threshold, validators, span merging
 - [x] Encrypted store — projects, entities, audit journal, SQLite migrations
 - [x] Builtin rule set — 48 rules across `keys`, `credentials`, `pii`, `infra` (39 active by default)
 - [x] gitleaks rule import with a per-rule skip report
-- [x] CLI — `anon`, `deanon`, `hook`, `init`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
+- [x] CLI — `anon`, `deanon`, `hook`, `init`, `mcp`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
 - [x] Claude Code hooks — `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `MessageDisplay`, installed by `shade init`, which records `hook` as the adapter in the journal
-- [ ] MCP and proxy adapters — `core.Engine` already takes the adapter name, and only `cli` and `hook` reach it so far
-- [ ] MCP `scan` tool — `Engine.Scan` is the read-only path it would use
+- [x] Skills — `shade` and `shade-rules`, installed into the plugin by `shade init`
+- [x] MCP adapter — `shade mcp` serves six tools and the `shade://directive` resource over stdio; the proxy half of this item is phase 4
+- [x] MCP `scan` tool — reports the types and the rules that found them, never the fragment or the offset
 - [ ] Rule packages — the `packages` table exists; nothing writes to it yet
 - [ ] Usage UI — `rule_hits` is written on every anonymization; nothing reads it yet
 - [ ] Streaming mode and LLM provider integration — the config keys are declared but have no consumer
