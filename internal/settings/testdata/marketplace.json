@@ -1,0 +1,9 @@
+{
+  "name": "shade",
+  "plugins": [
+    {
+      "name": "shade",
+      "source": "./"
+    }
+  ]
+}
