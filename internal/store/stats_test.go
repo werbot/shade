@@ -166,6 +166,31 @@ func TestRecordUnresolvedKeepsOnlyToken(t *testing.T) {
 	}
 }
 
+// A blocked prompt leaves one row per type and nothing else: the values are never
+// stored at all, and the block happens before the anonymization, so there are no
+// tokens to put into detail either.
+func TestRecordBlockedKeepsOnlyType(t *testing.T) {
+	p := project(t)
+	if err := s.RecordBlocked(ctx, p.ID, "hook", "HOST"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.Audit(ctx, p.ID, 10, store.AuditFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %+v", entries)
+	}
+	en := entries[0]
+	if en.Action != "blocked" || en.Direction != "to_model" ||
+		en.Adapter != "hook" || en.Type != "HOST" {
+		t.Fatalf("got %+v", en)
+	}
+	if en.Rule != "" || en.Detail != "" {
+		t.Fatalf("a blocked row carries neither rule nor detail: %+v", en)
+	}
+}
+
 // The filters must be applied in SQL before LIMIT: with cutting in Go three fresh
 // blocks would push out three old unresolved records, and --unresolved
 // would return nothing on a journal where such records do exist.

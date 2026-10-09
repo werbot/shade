@@ -87,6 +87,20 @@ func (s *Store) RecordUnresolved(ctx context.Context, projectID int64, adapter, 
 	return nil
 }
 
+// RecordBlocked leaves a trace of a text the adapter refused to pass on. One row per
+// type, and no detail: a prompt is blocked before the anonymization, so it has no
+// tokens, and the values are never written to the journal at all.
+func (s *Store) RecordBlocked(ctx context.Context, projectID int64, adapter, typ string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO audit(ts, project_id, direction, adapter, rule, type, action, detail)
+		 VALUES(?, ?, 'to_model', ?, NULL, ?, 'blocked', NULL)`,
+		time.Now().Unix(), projectID, adapter, typ)
+	if err != nil {
+		return fmt.Errorf("writing a blocked %s to the journal: %w", typ, err)
+	}
+	return nil
+}
+
 // AuditEntry is a journal record. Empty rule/type/detail arrive empty
 // strings: they are nullable in the schema, and the consumer has no way to tell NULL from empty.
 type AuditEntry struct {

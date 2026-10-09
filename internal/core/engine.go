@@ -77,6 +77,13 @@ func New(ctx context.Context, home, dir, adapter string) (*Engine, error) {
 // Close releases the engine's store.
 func (e *Engine) Close() error { return e.store.Close() }
 
+// RecordBlocked notes in the journal that the adapter refused to pass a text on.
+// The adapter keeps its own package out of store: core already knows both the project
+// and the adapter of the current process.
+func (e *Engine) RecordBlocked(ctx context.Context, typ string) error {
+	return e.store.RecordBlocked(ctx, e.project.ID, e.adapter, typ)
+}
+
 // RootPath returns the engine's project root. The layers above use it to find
 // the project config: .shade.toml lies in the repository root, and not in the directory
 // from which the command was started.
