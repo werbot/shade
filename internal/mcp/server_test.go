@@ -13,8 +13,9 @@ import (
 )
 
 // session brings up the server on an in-memory transport and returns the connected
-// client session. It serves the resource tests, which call no tool. NewServer takes an
-// Opener and the tools it registers now need one, so the opener here fails with an
+// client session. Its callers only read the directive resource or call an unknown tool
+// name, so no registered tool handler runs and the opener is never reached. NewServer
+// still takes one, and the tools it registers need it, so the opener here fails with an
 // error: a tool reached through this helper reports that error instead of panicking on
 // a nil func. The tool tests use toolSession, which supplies a fake engine.
 func session(t *testing.T) *sdk.ClientSession {
