@@ -183,6 +183,7 @@ flowchart TB
 | `cmd/shade` | CLI: argument parsing, command registry, exit codes, output shapes |
 | `internal/core` | `Engine` — glues rules, placeholders and the store into `Anonymize`/`Restore` |
 | `internal/hook` | The Claude Code adapter: event payloads, per-event responses, the JSON walker |
+| `internal/mcp` | The MCP adapter: the directive resource, and the tools the model calls |
 | `internal/settings` | Claude Code `settings.json`: load, merge, diff, and the plugin files |
 | `internal/directive` | The one text that tells the model how to treat the tokens |
 | `internal/rules` | Compiles rule specs, finds matches, merges spans, runs validators |
