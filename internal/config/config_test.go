@@ -121,6 +121,65 @@ func TestEmptyDirsSkipLayerInsteadOfReadingCwd(t *testing.T) {
 	}
 }
 
+// TestPromptGateDefaultIsOffAndUnknownValueFails — a misspelled policy is an error,
+// not a silently off gate: on|off|auto guards against a leak, and a typo must be
+// visible instead of quietly disabling the gate.
+func TestPromptGateDefaultIsOffAndUnknownValueFails(t *testing.T) {
+	c, err := config.Load("", "")
+	if err != nil || c.PromptGate != "off" || c.PromptGateEnabled() {
+		t.Fatalf("default: %+v, enabled=%v, err=%v", c, c.PromptGateEnabled(), err)
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("prompt_gate = \"on\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err = config.Load(home, "")
+	if err != nil || !c.PromptGateEnabled() {
+		t.Fatalf("on: enabled=%v, err=%v", c.PromptGateEnabled(), err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("prompt_gate = \"touch\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = config.Load(home, "")
+	if err == nil {
+		t.Fatal("a misspelled policy must be an error, not a silently off gate")
+	}
+	// The message must name the file, as the rest of this package does: with two
+	// configs, otherwise it is unclear which one to fix.
+	if !strings.Contains(err.Error(), "config.toml") {
+		t.Fatalf("error must name the file: %v", err)
+	}
+}
+
+// TestPromptGateAutoIsOffUntilPhase4 — spec §10: auto means "block unless a proxy is
+// active", a meaning that only exists once shade serve lands in phase 4. Until then
+// auto must behave as off, and that contract is worth pinning.
+func TestPromptGateAutoIsOffUntilPhase4(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "config.toml"), "prompt_gate = \"auto\"\n")
+
+	c, err := config.Load(home, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.PromptGate != "auto" || c.PromptGateEnabled() {
+		t.Fatalf("auto: gate=%q, enabled=%v", c.PromptGate, c.PromptGateEnabled())
+	}
+}
+
+// TestPromptGateTypoInGlobalFailsDespiteProjectOverride — the value is validated per
+// layer, so a typo in the global file is an error even when the project file overrides
+// it with a valid one: the typo is real, and a gate that guards a leak fails loud.
+func TestPromptGateTypoInGlobalFailsDespiteProjectOverride(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(home, "config.toml"), "prompt_gate = \"touch\"\n")
+	write(t, filepath.Join(root, ".shade.toml"), "prompt_gate = \"off\"\n")
+
+	if _, err := config.Load(home, root); err == nil {
+		t.Fatal("a typo in the global file must fail even when the project overrides it")
+	}
+}
+
 func write(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/werbot/shade/internal/core"
 	"github.com/werbot/shade/internal/rules"
+	"github.com/werbot/shade/internal/store"
 )
 
 // failInserts puts a trigger on the table that kills any insert — that is how
@@ -75,6 +76,26 @@ func TestAnonymizeCountsRuleHitOnceForSplitSpan(t *testing.T) {
 	}
 	if got := ruleHits(t, e, "nul_class"); got != 1 {
 		t.Fatalf("counter %d, expected 1: one rule — one hit", got)
+	}
+}
+
+// RecordBlocked fills in both the project and the adapter of the process: the
+// adapter never reaches into store, and core already knows both.
+func TestRecordBlockedWritesWithEngineAdapter(t *testing.T) {
+	e := newEngine(t)
+	if err := e.RecordBlocked(ctx, "HOST"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := e.Store().Audit(ctx, e.ProjectID(), 10, store.AuditFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %+v", rows)
+	}
+	en := rows[0]
+	if en.Action != "blocked" || en.Direction != "to_model" || en.Adapter != "cli" || en.Type != "HOST" {
+		t.Fatalf("got %+v", en)
 	}
 }
 

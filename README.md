@@ -25,6 +25,7 @@ phone: +1 415 555 0132
 
 - [Why](#-why)
 - [How it works](#-how-it-works)
+- [Claude Code](#-claude-code)
 - [Architecture](#-architecture)
 - [Install](#-install)
 - [Quick start](#-quick-start)
@@ -55,6 +56,10 @@ to the real system.
 - **Fail-closed or fail-open, your call.** By default an answer that still
   contains an unresolvable placeholder is *blocked* rather than handed over with
   a hole in it.
+
+One caveat on the Claude Code integration: the prompt you type is not anonymized —
+a hook cannot rewrite a prompt — so what is shaded there is what the tools bring
+back. See [Claude Code](#-claude-code).
 
 ## 🔄 How it works
 
@@ -97,12 +102,75 @@ data loss rather than to improve matching:
 Restore runs the opposite way, right to left, because each substitution changes
 the length of the text.
 
+## 🤖 Claude Code
+
+`shade init` installs the hooks, and from then on the session is shaded without
+you doing anything. It writes the plugin into `$SHADE_HOME/claude` and prints a
+diff of every settings file it touches:
+
+```
+$ shade init
+/Users/you/.shade/claude/.claude-plugin/marketplace.json:
++{ ... }
+/Users/you/.shade/claude/.claude-plugin/plugin.json:
++{ ... }
+/Users/you/.shade/claude/hooks/hooks.json:
++{ "hooks": { ... one entry per event ... } }
+/Users/you/.claude/settings.json:
++{
++  "extraKnownMarketplaces": {
++    "shade": {
++      "source": {
++        "path": "/Users/you/.shade/claude",
++        "source": "directory"
++      }
++    }
++  }
++}
+/Users/you/code/my-app/.claude/settings.json:
++{
++  "enabledPlugins": {
++    "shade@shade": true
++  }
++}
+```
+
+The marketplace declaration always goes in the **user** settings, because Claude
+Code does not honour it in a project file; `enabledPlugins` goes to the project of
+the git root, or to the user settings under `--global`. The command is idempotent —
+a second run prints nothing at all — and `--dry-run` prints the same diff
+without writing anything. `--keep-old-hook` leaves an existing `PostToolUse` hook
+in place, which is worth doing only if you want two rewrites on one event; shade
+removes it by default, since two of them are non-deterministic.
+
+| Event | What shade does |
+| --- | --- |
+| `SessionStart` | Registers the project and hands the model the directive that explains the tokens |
+| `UserPromptSubmit` | With `prompt_gate = "on"`, blocks a prompt whose content looks sensitive and names the types; silent otherwise |
+| `PreToolUse` | Puts the real values back into the tool arguments, so the tool runs for real |
+| `PostToolUse` | Replaces values in the tool output with placeholders, so the model reads tokens |
+| `MessageDisplay` | Shows the real values on your screen; the transcript and the model keep the tokens |
+
+Two limits are worth knowing before you rely on it:
+
+- **The prompt you type is not anonymized.** A hook cannot rewrite the prompt, so
+  the gate can only block it — and only when you turn it on. A secret pasted
+  straight into the prompt reaches the model unless `prompt_gate = "on"` stops it.
+  What is protected is what the tools bring back: files, command output, logs.
+- **Tool arguments are restored optimistically.** The model writes those arguments, so a
+  token it mangled is still matched; the other direction — tool output, which the
+  outside world writes — is only ever anonymized.
+
 ## 🧱 Architecture
 
 ```mermaid
 flowchart TB
-    CLI["cmd/shade<br/>anon · deanon · rules · entities · audit · test · doctor · version"]
+    CLI["cmd/shade<br/>anon · deanon · hook · init · rules · entities · audit · test · doctor · version"]
     CLI --> Core["internal/core<br/>Engine: Anonymize · Restore · Scan"]
+    CLI --> Hook["internal/hook<br/>Claude Code events → responses"]
+    CLI --> Set["internal/settings<br/>settings.json · plugin files"]
+    Hook --> Core
+    Hook --> Dir["internal/directive<br/>the model directive"]
     Core --> Rules["internal/rules<br/>compile · detect · merge · validators"]
     Core --> PH["internal/placeholder<br/>format · find · guard"]
     Core --> Store["internal/store<br/>SQLite, projects, entities, rules"]
@@ -114,6 +182,9 @@ flowchart TB
 | --- | --- |
 | `cmd/shade` | CLI: argument parsing, command registry, exit codes, output shapes |
 | `internal/core` | `Engine` — glues rules, placeholders and the store into `Anonymize`/`Restore` |
+| `internal/hook` | The Claude Code adapter: event payloads, per-event responses, the JSON walker |
+| `internal/settings` | Claude Code `settings.json`: load, merge, diff, and the plugin files |
+| `internal/directive` | The one text that tells the model how to treat the tokens |
 | `internal/rules` | Compiles rule specs, finds matches, merges spans, runs validators |
 | `internal/placeholder` | The `<TYPE_N>` format, tolerant token search, the guard |
 | `internal/store` | SQLite schema, migrations, projects, entities, rules, stats, audit |
@@ -150,7 +221,7 @@ directory: /Users/you/.shade — available
 key: readable
 database: /Users/you/.shade/shade.db
 project: /Users/you/code/my-app
-rules: 37 active
+rules: 39 active
 ```
 
 `doctor` never creates anything — it reports what it finds, so "configured" stays
@@ -184,8 +255,9 @@ offset	type	rule	fragment
 ```
 
 `--json` gives a machine-readable shape — `{"text": ..., "spans": [{"type": ..., "rule": ...}]}`
-for `anon`, `{"text": ..., "unresolved": [...]}` for `deanon`. All commands read
-a file argument or stdin, and accept `--project DIR`.
+for `anon`, `{"text": ..., "unresolved": [...]}` for `deanon`. `anon`, `deanon`,
+`test` and `rules import` read a file argument or stdin and accept `--project DIR`;
+`hook` reads its event from stdin, and `init` takes neither.
 
 ## 🧭 Command reference
 
@@ -193,6 +265,8 @@ a file argument or stdin, and accept `--project DIR`.
 | --- | --- |
 | `shade anon [--json] [--project DIR] [FILE]` | Replace secrets with placeholders |
 | `shade deanon [--json] [--project DIR] [FILE]` | Restore real values |
+| `shade hook` | Answer a Claude Code hook event read from stdin (always exits 0 for a hook event) |
+| `shade init [--global] [--dry-run] [--keep-old-hook]` | Install the Claude Code hooks: generate the plugin and wire it into the settings |
 | `shade doctor` | Report the state of the environment without modifying it |
 | `shade test [--rules NAME] [--sample TEXT] [FILE]` | Run the active rule set against a sample, no writes |
 | `shade rules list` | List rules of the scope |
@@ -226,6 +300,12 @@ are listed on stderr, and under `--json` an empty `text` expresses the block.
 Under `fail_open_log` the same situation produces the partial text, a warning on
 stderr and exit `0`.
 
+`shade hook` is the exception to the table: answering a hook event always exits
+`0`. A non-zero exit at Claude Code means "block" or "message the model", and a
+hook that failed must do neither — a runtime failure comes back as a
+`systemMessage` on stdout, and an unreadable payload is silence. Its own usage
+errors are not an exception: `shade hook` with a stray argument still exits `2`.
+
 An auxiliary write failure never changes the code: if the hit counter or the
 journal cannot be written, the result is still delivered and the failure is
 reported on stderr. A ready prompt or answer is worth more than a statistics row.
@@ -247,10 +327,12 @@ written for a future version will not break today's binary.
 | --- | --- | --- |
 | `fail_policy` | `fail_closed` | `fail_closed` blocks an answer with unresolved placeholders (exit 3); `fail_open_log` lets it through with a warning |
 | `entities_ttl` | `90d` | Default age for `shade entities prune` |
+| `prompt_gate` | `off` | `on` makes the `UserPromptSubmit` hook block a prompt whose content looks sensitive, naming the types. `auto` means "unless a proxy is active" and is not live until the proxy exists, so `off` and `auto` behave the same today |
 
 ```toml
 fail_policy = "fail_open_log"
 entities_ttl = "30d"
+prompt_gate = "on"
 ```
 
 `SHADE_HOME` overrides the state directory (`~/.shade`).
@@ -291,6 +373,9 @@ without touching rules you have edited.
 | `keys` — key material (SSH, WireGuard, Putty, k8s, cloud keys) | 18 | 18 |
 | `credentials` — headers, CLI flags, netrc, assignments, vendor tokens | 18 | 17 |
 | `pii` — personal and network identifiers | 10 | 2 |
+| `infra` — the login and host of an `ssh`/`scp`/`sftp` command line | 2 | 2 |
+
+48 rules in total, 39 of them active out of the box.
 
 PII rules are intentionally conservative: only `phone` and `card` are on out of
 the box. The remaining eight (`email`, `ssn`, `iban`, `mac_addr`, `home_path`,
@@ -381,16 +466,17 @@ from the standard library.
 
 ## 📌 Status
 
-Phase 1 — the core and the CLI — is complete. The rest is ahead of us; the code
-is already sliced for it, but none of the adapters exist yet.
+Phases 1 and 2 are complete — the core and the CLI, then the Claude Code hook
+adapter. The rest is ahead of us; the code is already sliced for it.
 
 - [x] Core engine — `Anonymize`, `Restore`, `Scan`
 - [x] Rule engine — keyword prefilter, entropy threshold, validators, span merging
 - [x] Encrypted store — projects, entities, audit journal, SQLite migrations
-- [x] Builtin rule set — 46 rules across `keys`, `credentials`, `pii` (37 active by default)
+- [x] Builtin rule set — 48 rules across `keys`, `credentials`, `pii`, `infra` (39 active by default)
 - [x] gitleaks rule import with a per-rule skip report
-- [x] CLI — `anon`, `deanon`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
-- [ ] Hook, MCP and proxy adapters — `core.Engine` already takes an adapter name and records it in the journal, but it is only ever `cli` today
+- [x] CLI — `anon`, `deanon`, `hook`, `init`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
+- [x] Claude Code hooks — `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `MessageDisplay`, installed by `shade init`, which records `hook` as the adapter in the journal
+- [ ] MCP and proxy adapters — `core.Engine` already takes the adapter name, and only `cli` and `hook` reach it so far
 - [ ] MCP `scan` tool — `Engine.Scan` is the read-only path it would use
 - [ ] Rule packages — the `packages` table exists; nothing writes to it yet
 - [ ] Usage UI — `rule_hits` is written on every anonymization; nothing reads it yet

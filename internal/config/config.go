@@ -11,20 +11,28 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Config — the settings read in phase 1. There are exactly as many fields as there are
+// FailOpenLog is the fail_policy value that lets an answer through with the values
+// that could be restored and a warning about the tokens that could not. Every other
+// value — including a missing one — is fail_closed. The CLI and the hook both compare
+// FailPolicy against this constant: a bare literal in either place would drift from
+// the other on a rename and fail in the unsafe direction.
+const FailOpenLog = "fail_open_log"
+
+// Config — the settings read so far. There are exactly as many fields as there are
 // consumers: FailPolicy is read by the CLI (fail_open_log turns exit code 3 into
-// a warning), EntitiesTTL — entities prune. The remaining keys of the spec
-// (stream_mode, upstream, api_key_env, [categories]) will arrive together with their
-// consumers; toml.Unmarshal ignores unknown keys, so a file with
-// them right now will not break.
+// a warning), EntitiesTTL — entities prune, PromptGate — the UserPromptSubmit gate.
+// The remaining keys of the spec (stream_mode, upstream, api_key_env, [categories])
+// will arrive together with their consumers; toml.Unmarshal ignores unknown keys, so
+// a file with them right now will not break.
 type Config struct {
 	FailPolicy  string `toml:"fail_policy"`
 	EntitiesTTL string `toml:"entities_ttl"`
+	PromptGate  string `toml:"prompt_gate"`
 }
 
 // Default returns the values in effect when no file has set a field.
 func Default() Config {
-	return Config{FailPolicy: "fail_closed", EntitiesTTL: "90d"}
+	return Config{FailPolicy: "fail_closed", EntitiesTTL: "90d", PromptGate: "off"}
 }
 
 // Load assembles the config from three layers: defaults, the global file home/config.toml,
@@ -47,12 +55,27 @@ func Load(home, projectRoot string) (Config, error) {
 		if l.dir == "" {
 			continue
 		}
-		if err := mergeFile(&c, filepath.Join(l.dir, l.name)); err != nil {
+		path := filepath.Join(l.dir, l.name)
+		if err := mergeFile(&c, path); err != nil {
 			return Config{}, err
+		}
+		// Validated per layer, not after the merge: only here is the file the bad value
+		// came from still known. A typo in the global file stays an error even when the
+		// project file overrides it — the typo is real, and a gate that guards a leak fails loud.
+		switch c.PromptGate {
+		case "off", "on", "auto":
+		default:
+			return Config{}, fmt.Errorf("config %s: prompt_gate: %q is not off, on or auto", path, c.PromptGate)
 		}
 	}
 	return c, nil
 }
+
+// PromptGateEnabled reports whether the UserPromptSubmit gate must block a prompt
+// with sensitive content. "auto" means "unless a proxy is active": the check for an
+// active proxy appears in phase 4 together with shade serve, so until then auto is
+// off, and the default is off for the same reason.
+func (c Config) PromptGateEnabled() bool { return c.PromptGate == "on" }
 
 // mergeFile parses one layer into c. The path in the error is mandatory: there are two configs, and
 // without it the user will not understand which one to fix.

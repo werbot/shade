@@ -1,0 +1,52 @@
+{
+  "enabledPlugins": {
+    "formatter@anthropic-tools": true
+  },
+  "extraKnownMarketplaces": {
+    "team-tools": {
+      "source": {
+        "source": "github",
+        "repo": "acme/team-tools"
+      }
+    }
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/redact_output.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/audit_bash.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/session_start.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "model": "claude-sonnet-5",
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Read"
+    ]
+  }
+}

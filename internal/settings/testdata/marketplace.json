@@ -1,0 +1,13 @@
+{
+  "description": "shade: Claude Code hooks that mask secrets in tool output and restore them before a tool runs",
+  "name": "shade",
+  "owner": {
+    "name": "shade"
+  },
+  "plugins": [
+    {
+      "name": "shade",
+      "source": "./"
+    }
+  ]
+}

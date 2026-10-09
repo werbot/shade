@@ -29,10 +29,7 @@ func (s *Store) ProjectForPath(ctx context.Context, dir string) (Project, error)
 	if dir == "" {
 		return Project{}, errors.New("project directory is not set")
 	}
-	root := canonicalPath(dir)
-	if top := gitToplevel(ctx, root); top != "" {
-		root = canonicalPath(top)
-	}
+	root := ProjectRoot(ctx, dir)
 	p := Project{RootPath: root, Name: filepath.Base(root)}
 	// name is written again with the same value: otherwise ON CONFLICT DO NOTHING
 	// would not return the row through RETURNING and a separate SELECT would be needed.
@@ -44,6 +41,22 @@ func (s *Store) ProjectForPath(ctx context.Context, dir string) (Project, error)
 		return Project{}, fmt.Errorf("project for %s: %w", dir, err)
 	}
 	return p, nil
+}
+
+// ProjectRoot returns the root of the project dir belongs to: the top of the git
+// repository, and dir itself outside a repository. The result is canonical —
+// absolute and free of symlinks — so two spellings of one directory give one root.
+//
+// This is the single definition of "project root". ProjectForPath keys the rows of
+// projects off it and the install command places the project settings by it; a
+// second copy of the resolution would drift from this one at the first edit, and
+// the two would disagree about where the settings go.
+func ProjectRoot(ctx context.Context, dir string) string {
+	root := canonicalPath(dir)
+	if top := gitToplevel(ctx, root); top != "" {
+		root = canonicalPath(top)
+	}
+	return root
 }
 
 // canonicalPath makes the path absolute and free of symlinks, falling back to

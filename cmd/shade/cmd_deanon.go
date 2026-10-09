@@ -64,7 +64,7 @@ func runDeanon(args []string, stdio IO) int {
 	// blocked — the answer is not handed out: partially restored text does not
 	// leave. Partial output is allowed by fail_open_log, and then the policy has
 	// a visible difference, not just a return code.
-	blocked := len(res.Unresolved) > 0 && cfg.FailPolicy != "fail_open_log"
+	blocked := len(res.Unresolved) > 0 && cfg.FailPolicy != config.FailOpenLog
 
 	if len(res.Unresolved) > 0 {
 		// Tokens, and only they: stdout goes on to the model, and stderr is read
