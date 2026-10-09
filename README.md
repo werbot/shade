@@ -21,24 +21,24 @@ card: 4242 4242 4242 4242
 phone: +1 415 555 0132
 ```
 
-## Contents
+## 📖 Contents
 
-- [Why](#why)
-- [How it works](#how-it-works)
-- [Architecture](#architecture)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [Command reference](#command-reference)
-- [Exit codes](#exit-codes)
-- [Configuration](#configuration)
-- [Rules](#rules)
-- [Placeholders](#placeholders)
-- [Security model](#security-model)
-- [Development](#development)
-- [Status](#status)
-- [License](#license)
+- [Why](#-why)
+- [How it works](#-how-it-works)
+- [Architecture](#-architecture)
+- [Install](#-install)
+- [Quick start](#-quick-start)
+- [Command reference](#-command-reference)
+- [Exit codes](#-exit-codes)
+- [Configuration](#-configuration)
+- [Rules](#-rules)
+- [Placeholders](#-placeholders)
+- [Security model](#-security-model)
+- [Development](#-development)
+- [Status](#-status)
+- [License](#-license)
 
-## Why
+## 🎯 Why
 
 Pasting logs, configs and stack traces into a chat window hands your secrets to
 someone else's infrastructure. Redacting by hand is lossy — you cannot get the
@@ -56,7 +56,7 @@ to the real system.
   contains an unresolvable placeholder is *blocked* rather than handed over with
   a hole in it.
 
-## How it works
+## 🔄 How it works
 
 ```mermaid
 flowchart TB
@@ -97,7 +97,7 @@ data loss rather than to improve matching:
 Restore runs the opposite way, right to left, because each substitution changes
 the length of the text.
 
-## Architecture
+## 🧱 Architecture
 
 ```mermaid
 flowchart TB
@@ -125,7 +125,7 @@ flowchart TB
 the current directory) and a hook or MCP adapter that passes the `cwd` from its
 own payload.
 
-## Install
+## 📦 Install
 
 Requires Go 1.27.1 or newer.
 
@@ -139,7 +139,7 @@ The build is pure Go end to end — SQLite comes from `modernc.org/sqlite`, so
 
 There are no releases or prebuilt packages yet; build from source.
 
-## Quick start
+## 🚀 Quick start
 
 State lives in `$SHADE_HOME`, defaulting to `~/.shade`. It is created on first
 run; nothing has to be initialized by hand.
@@ -187,7 +187,7 @@ offset	type	rule	fragment
 for `anon`, `{"text": ..., "unresolved": [...]}` for `deanon`. All commands read
 a file argument or stdin, and accept `--project DIR`.
 
-## Command reference
+## 🧭 Command reference
 
 | Command | Purpose |
 | --- | --- |
@@ -211,7 +211,7 @@ Rules, entities and the journal are scoped to the project: `--global` edits the
 rule set shared by every project, while the default scope is the project of the
 current directory.
 
-## Exit codes
+## 🚦 Exit codes
 
 | Code | Meaning |
 | --- | --- |
@@ -230,7 +230,7 @@ An auxiliary write failure never changes the code: if the hit counter or the
 journal cannot be written, the result is still delivered and the failure is
 reported on stderr. A ready prompt or answer is worth more than a statistics row.
 
-## Configuration
+## 🔧 Configuration
 
 Settings are read from three layers, each overriding the previous one:
 
@@ -255,7 +255,7 @@ entities_ttl = "30d"
 
 `SHADE_HOME` overrides the state directory (`~/.shade`).
 
-## Rules
+## 📜 Rules
 
 A rule has a **type** (which placeholder it produces), a **kind**, and a
 **pattern**:
@@ -321,7 +321,7 @@ here, so such rules are narrowed to the match or skipped with a reason. Import i
 one-way: `export` writes `shade`'s own format, since there is no reverse mapping
 for validators, kind and ordering.
 
-## Placeholders
+## 🔖 Placeholders
 
 The canonical form is `<TYPE_N>`, with `N` a per-project, per-type counter.
 
@@ -341,7 +341,7 @@ bracket is missing and the token ends at a word boundary. A token glued to a
 letter or digit (`<KEY_1яяя`) is rejected rather than guessed at — treating it as
 a token would substitute a value where none was requested.
 
-## Security model
+## 🔒 Security model
 
 - **Key.** 32 random bytes in `$SHADE_HOME/key`, mode `0600`. It is published
   atomically via a hard link and never regenerated: overwriting it would make
@@ -363,7 +363,7 @@ Retention is per project and explicit: `shade entities prune` drops entities by
 last-seen age. A pruned value is unrecoverable, since the plaintext exists only
 in `value_enc`.
 
-## Development
+## 🧪 Development
 
 ```
 make test    # go test ./...
@@ -379,7 +379,7 @@ Dependencies are deliberately few — `github.com/BurntSushi/toml` for config an
 rules, `modernc.org/sqlite` for a CGO-free SQLite driver. Everything else comes
 from the standard library.
 
-## Status
+## 📌 Status
 
 Phase 1 is the core and the CLI, which is what this repository contains.
 
@@ -393,6 +393,6 @@ adapters exist yet.
 Not implemented today: hook/MCP/proxy adapters, streaming mode, rule packages,
 a usage UI, and any LLM provider integration.
 
-## License
+## 📄 License
 
 MIT — see [LICENSE](LICENSE).
