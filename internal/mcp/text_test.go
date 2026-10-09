@@ -200,3 +200,44 @@ func TestToolsDoNotLeakValues(t *testing.T) {
 		t.Errorf("deanonymize must carry the restored value in text: %s", restored)
 	}
 }
+
+// TestScanReportsRulesWithoutFragmentsOrOffsets is the fence around §11 and the offset
+// decision: the answer names the type and the rule that found it, and never the fragment
+// nor where it lies. Asserted on the raw wire rather than on a parsed struct — a field
+// that quietly drops out of the schema, or sneaks back into it, must not pass unnoticed.
+//
+// Scan's own returned text is not asserted here because the tool must discard it: the
+// fake hands back the input with the value still in it, so a handler that passed it on
+// would fail the fragment check below.
+func TestScanReportsRulesWithoutFragmentsOrOffsets(t *testing.T) {
+	cs := toolSession(t, t.TempDir(), fakeEngine{secret: testSecret, token: testToken})
+	res := callTool(t, cs, "scan", map[string]any{"text": "mail " + testSecret})
+
+	raw := rawResult(t, res)
+	if !strings.Contains(raw, `"type":"EMAIL"`) || !strings.Contains(raw, `"rule":"email"`) {
+		t.Fatalf("the answer must name the type and the rule: %s", raw)
+	}
+	// The offsets are lies whenever the input carried a placeholder of its own, so they
+	// must not leave the tool at all.
+	for _, key := range []string{`"start"`, `"end"`} {
+		if strings.Contains(raw, key) {
+			t.Errorf("the answer must carry no offsets, found %s: %s", key, raw)
+		}
+	}
+	if strings.Contains(raw, testSecret) {
+		t.Errorf("the answer must carry no fragment: %s", raw)
+	}
+}
+
+// TestScanUnknownRuleFails pins the one error Scan has: a name outside the active set.
+// It travels the protocol way, as isError, rather than as an empty answer.
+func TestScanUnknownRuleFails(t *testing.T) {
+	cs := toolSession(t, t.TempDir(), fakeEngine{secret: testSecret, token: testToken})
+	res := callTool(t, cs, "scan", map[string]any{"text": testSecret, "rule": "nosuchrule"})
+	if !res.IsError {
+		t.Fatalf("a rule outside the active set must fail the tool: %s", rawResult(t, res))
+	}
+	if raw := rawResult(t, res); !strings.Contains(raw, "nosuchrule") {
+		t.Errorf("the error must name the rule: %s", raw)
+	}
+}

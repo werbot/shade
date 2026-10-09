@@ -31,6 +31,14 @@ func addTextTools(srv *sdk.Server, home string, open Opener, diag io.Writer) {
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in textInput) (*sdk.CallToolResult, deanonOutput, error) {
 		return deanonymize(ctx, home, open, diag, in)
 	})
+
+	sdk.AddTool(srv, &sdk.Tool{
+		Name: "scan",
+		Description: "Report what the active rule set would catch in the text: the types " +
+			"and the rules that found them. Reads only — nothing is stored, no placeholder is issued.",
+	}, func(ctx context.Context, _ *sdk.CallToolRequest, in scanInput) (*sdk.CallToolResult, spansOutput, error) {
+		return scan(ctx, open, in)
+	})
 }
 
 // anonymize replaces the values and returns the text with placeholders. A failure of the
@@ -81,6 +89,28 @@ func deanonymize(ctx context.Context, home string, open Opener, diag io.Writer, 
 		return &sdk.CallToolResult{IsError: true}, deanonOutput{Text: "", Unresolved: toTokens(res.Unresolved)}, nil
 	}
 	return nil, deanonOutput{Text: res.Text, Unresolved: toTokens(res.Unresolved)}, nil
+}
+
+// scan reports what the active rule set catches, and by which rule. It is read-only: the
+// engine is opened for its rule set, nothing is stored and no placeholder is issued.
+//
+// The text Scan returns is discarded. It carries \x00S<n>\x00 sentinels where the input's
+// own placeholders stood, so its byte offsets fit the input only when the input had no
+// placeholder at all: handing them out would be a lie exactly when it matters. The
+// fragment is barred in machine modes besides. The answer is what and by which rule,
+// never where.
+func scan(ctx context.Context, open Opener, in scanInput) (*sdk.CallToolResult, spansOutput, error) {
+	e, err := open(ctx)
+	if err != nil {
+		return nil, spansOutput{}, err
+	}
+	defer e.Close()
+
+	_, spans, err := e.Scan(in.Text, in.Rule)
+	if err != nil {
+		return nil, spansOutput{}, err
+	}
+	return nil, spansOutput{Spans: toSpans(spans)}, nil
 }
 
 // toSpans maps the found fragments to their wire shape. An empty input still gives a

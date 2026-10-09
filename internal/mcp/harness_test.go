@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -55,11 +56,25 @@ func (f fakeEngine) Restore(_ context.Context, text string) (core.Result, error)
 	}, nil
 }
 
-func (f fakeEngine) Scan(text, _ string) (string, []rules.Span, error) { return text, nil, nil }
-func (f fakeEngine) RootPath() string                                  { return f.root }
-func (f fakeEngine) Store() *store.Store                               { return f.store }
-func (f fakeEngine) ProjectID() int64                                  { return f.projectID }
-func (f fakeEngine) Close() error                                      { return nil }
+// Scan mirrors the core contract the tool relies on: a name outside the active set is the
+// only error, and the spans carry the offsets the handler must drop. The returned text is
+// the masked one; for an input with no foreign placeholder it is the input as is, so a
+// handler that passed it through instead of dropping it would show up in the leak canary.
+func (f fakeEngine) Scan(text, only string) (string, []rules.Span, error) {
+	if only != "" && only != "email" {
+		return "", nil, fmt.Errorf("rule %q not found", only)
+	}
+	var spans []rules.Span
+	if i := strings.Index(text, f.secret); i >= 0 {
+		spans = append(spans, rules.Span{Start: i, End: i + len(f.secret), Type: "EMAIL", Rule: "email"})
+	}
+	return text, spans, nil
+}
+
+func (f fakeEngine) RootPath() string    { return f.root }
+func (f fakeEngine) Store() *store.Store { return f.store }
+func (f fakeEngine) ProjectID() int64    { return f.projectID }
+func (f fakeEngine) Close() error        { return nil }
 
 // toolSession brings up the server with a fake engine and returns the connected client
 // session. home is the state directory config.Load reads for deanonymize.

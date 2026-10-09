@@ -9,6 +9,12 @@ type textInput struct {
 	Text string `json:"text" jsonschema:"the text to work on"`
 }
 
+// scanInput is the argument of scan: the text, and an optional rule to narrow the run to.
+type scanInput struct {
+	Text string `json:"text"`
+	Rule string `json:"rule,omitempty" jsonschema:"narrow the run to one rule of the active set"`
+}
+
 // spanInfo names a fragment found: its type and the rule that found it. The fragment and
 // its offsets stay behind — the same bar the scan tool keeps (§11).
 type spanInfo struct {
