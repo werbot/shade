@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -94,13 +95,16 @@ func runInit(args []string, stdio IO) int {
 	if global {
 		user.EnablePlugin(pluginID, true)
 	} else {
-		// ponytail: the current directory is the project root; `init` run from a
-		// subdirectory puts the settings there. Resolve the git toplevel if that bites.
 		wd, err := os.Getwd()
 		if err != nil {
 			return fail(stdio, "init", 1, fmt.Errorf("working directory: %w", err))
 		}
-		projectPath = filepath.Join(wd, ".claude", "settings.json")
+		// The git root, not the current directory: Claude Code reads the project
+		// settings only from the directory it was launched in, and the project of
+		// shade is the repository. Settings written into a subdirectory would never
+		// be read by a session started at the root — the plugin would stay off with
+		// no error anywhere.
+		projectPath = filepath.Join(store.ProjectRoot(context.Background(), wd), ".claude", "settings.json")
 	}
 	if err := applySettings(stdio, userPath, user, dryRun); err != nil {
 		return fail(stdio, "init", 1, err)
@@ -117,7 +121,9 @@ func runInit(args []string, stdio IO) int {
 		}
 	}
 
-	fmt.Fprintln(stdio.Out, trustReminder)
+	if !dryRun {
+		fmt.Fprintln(stdio.Out, trustReminder)
+	}
 	return 0
 }
 

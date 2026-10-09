@@ -67,8 +67,15 @@ func TestInitIsIdempotent(t *testing.T) {
 		t.Fatalf("the diff must show created plugin files: %s", out)
 	}
 	code, out, _ = runCLI(t, home, repo, []string{"init"}, "")
-	if code != 0 || strings.Contains(out, "+") {
-		t.Fatalf("a second init must be a no-op: %s", out)
+	if code != 0 {
+		t.Fatalf("the second run failed: code=%d", code)
+	}
+	// No line may begin with "+": a plain search for "+" anywhere would also match a
+	// temp path, and the second run legitimately still prints the trust reminder.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "+") {
+			t.Fatalf("a second init must be a no-op: %s", out)
+		}
 	}
 }
 
@@ -87,6 +94,9 @@ func TestInitDryRunPrintsButWritesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, ".claude", "settings.json")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("dry run wrote the project settings: %v", err)
 	}
+	// The directories too, not only the files: creating them is a write as well.
+	missing(t, filepath.Join(home, "claude"))
+	missing(t, filepath.Join(home, ".claude", "settings.json"))
 }
 
 func TestInitRemovesTheOldRedactHook(t *testing.T) {
@@ -120,7 +130,9 @@ func TestInitKeepsTheOldHookOnFlag(t *testing.T) {
 	if !strings.Contains(readFile(t, userSettings), "redact_output.py") {
 		t.Fatal("the old hook was removed despite --keep-old-hook")
 	}
-	if !strings.Contains(out, "warning") {
+	// The exact message, not "warning": the temporary-build-dir warning always fires
+	// under `go test`, so a search for the word alone could never fail.
+	if !strings.Contains(out, keepOldWarning) {
 		t.Fatalf("the flag must warn about the competing rewrites: %s", out)
 	}
 }
@@ -176,4 +188,47 @@ func TestInitInARepositoryWithoutClaudeDirCreatesIt(t *testing.T) {
 	if got := readFile(t, filepath.Join(repo, ".claude", "settings.json")); !strings.Contains(got, "shade@shade") {
 		t.Fatalf("the project settings were not created: %s", got)
 	}
+}
+
+// The project of shade is the repository, and Claude Code reads the project settings
+// only from the directory it was launched in: settings written into a subdirectory
+// would never be read by a session started at the root, and the plugin would stay off
+// with nothing reporting an error.
+func TestInitFromASubdirectoryWritesToTheRepoRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := gitDir(t)
+	sub := filepath.Join(repo, "internal", "foo")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, errOut := runCLI(t, home, sub, []string{"init"}, "")
+	if code != 0 {
+		t.Fatalf("code=%d err=%s", code, errOut)
+	}
+	if got := readFile(t, filepath.Join(repo, ".claude", "settings.json")); !strings.Contains(got, "shade@shade") {
+		t.Fatalf("the plugin was not enabled at the repository root: %s", got)
+	}
+	missing(t, filepath.Join(sub, ".claude", "settings.json"))
+}
+
+// The exit code contract: a bad flag and a positional argument are 2, and nothing is
+// written before the arguments are parsed.
+func TestInitRejectsBadArguments(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := gitDir(t)
+
+	for _, arg := range []string{"--nope", "extra"} {
+		code, _, errOut := runCLI(t, home, repo, []string{"init", arg}, "")
+		if code != 2 {
+			t.Fatalf("%s: code=%d, want 2 (%s)", arg, code, errOut)
+		}
+		if errOut == "" {
+			t.Fatalf("%s: exit 2 without an explanation on stderr", arg)
+		}
+	}
+	missing(t, filepath.Join(home, ".claude"))
+	missing(t, filepath.Join(home, "claude"))
 }
