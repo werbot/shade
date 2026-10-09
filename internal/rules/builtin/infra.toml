@@ -1,0 +1,32 @@
+# Context rules for ssh-style logins: the user and the host of an ssh/scp/sftp
+# command line. Neither the ported reference nor the rest of the builtin set
+# produces the USER and HOST types, and the phase 2 acceptance criterion
+# (`ssh <USER_1>@<HOST_1>` runs with the real values restored) needs them.
+#
+# The anchor ssh|scp|sftp is mandatory: a bare "any word is a login" rule
+# catches ordinary prose, and a FQDN form without the anchor catches filenames
+# like app.config.js. The order stays below the email rule (380): when email is
+# enabled, `login@db.prod.local` also looks like an address, and a later order
+# would type the span EMAIL instead of USER/HOST.
+#
+# A dotless host (localhost) and an IP (10.0.0.7) are out of scope here: public
+# addresses are the business of public_ip, and private addresses are left alone
+# on purpose. Only the first group of the pattern is masked.
+
+[[rules]]
+id = "ssh_login" # the login of an ssh/scp/sftp target, after any flags
+type = "USER"
+kind = "regex"
+pattern = '''\b(?:ssh|scp|sftp)\s+(?:[^\s@]+\s+)*([a-z_][a-z0-9._-]*)@'''
+secret_group = 1
+keywords = ["ssh", "scp", "sftp"]
+order = 130
+
+[[rules]]
+id = "ssh_host" # the FQDN of an ssh/scp/sftp target: a dot and a letter TLD are required
+type = "HOST"
+kind = "regex"
+pattern = '''\b(?:ssh|scp|sftp)\s+(?:[^\s@]+\s+)*(?:[a-z_][a-z0-9._-]*@)([A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,})'''
+secret_group = 1
+keywords = ["ssh", "scp", "sftp"]
+order = 130
