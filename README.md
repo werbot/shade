@@ -1,4 +1,4 @@
-# shade
+![shade](.github/assets/shade-banner.png)
 
 `shade` sits between your client and the LLM: it replaces sensitive values in
 outgoing prompts with stable placeholders, then puts the real values back into
