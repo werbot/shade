@@ -196,14 +196,24 @@ func TestLoadKeepsNumbersAsWritten(t *testing.T) {
 }
 
 // Load decodes with a json.Decoder to keep the number literals, and a Decoder stops
-// at the first value: a second one must be an error, as json.Unmarshal made it.
+// at the first value: anything after the object must be an error, as json.Unmarshal
+// made it. A bare More() check is not enough — at top level it also accepts a stray
+// closing brace or bracket.
 func TestLoadRejectsTrailingData(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	if err := os.WriteFile(path, []byte("{\"a\": 1} {\"b\": 2}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := settings.Load(path); err == nil {
-		t.Fatal("a second JSON value was silently ignored")
+	for _, body := range []string{
+		"{\"a\": 1} {\"b\": 2}\n", // a second value
+		"{\"a\": 1}}\n",           // a stray closing brace
+		"{\"a\": 1}]\n",           // a stray closing bracket
+	} {
+		t.Run(body, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "settings.json")
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := settings.Load(path); err == nil {
+				t.Fatalf("%q was silently accepted", body)
+			}
+		})
 	}
 }
 

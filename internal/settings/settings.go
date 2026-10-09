@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -46,8 +47,10 @@ func Load(path string) (File, error) {
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	// json.Unmarshal rejected trailing data; Decode alone would silently ignore it.
-	if dec.More() {
+	// A Decoder stops at the first value, so the stream must end here. This is
+	// stricter than dec.More(), which at top level also accepts a stray closing
+	// brace or bracket.
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s: unexpected data after the JSON object", path)
 	}
 	return f, nil
