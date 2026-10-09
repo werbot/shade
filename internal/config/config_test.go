@@ -121,6 +121,30 @@ func TestEmptyDirsSkipLayerInsteadOfReadingCwd(t *testing.T) {
 	}
 }
 
+// TestPromptGateDefaultIsOffAndUnknownValueFails — a misspelled policy is an error,
+// not a silently off gate: on|off|auto guards against a leak, and a typo must be
+// visible instead of quietly disabling the gate.
+func TestPromptGateDefaultIsOffAndUnknownValueFails(t *testing.T) {
+	c, err := config.Load("", "")
+	if err != nil || c.PromptGate != "off" || c.PromptGateEnabled() {
+		t.Fatalf("default: %+v, enabled=%v, err=%v", c, c.PromptGateEnabled(), err)
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("prompt_gate = \"on\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err = config.Load(home, "")
+	if err != nil || !c.PromptGateEnabled() {
+		t.Fatalf("on: enabled=%v, err=%v", c.PromptGateEnabled(), err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("prompt_gate = \"touch\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(home, ""); err == nil {
+		t.Fatal("a misspelled policy must be an error, not a silently off gate")
+	}
+}
+
 func write(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
