@@ -114,7 +114,7 @@ func TestClaudeCodeEndToEndAnonymizesAndRestores(t *testing.T) {
 	}
 	// 2. The model worked with tokens: PostToolUse tokenized what Read returned.
 	if !strings.Contains(stream, "<USER_1>") || !strings.Contains(stream, "<HOST_1>") {
-		t.Fatalf("the model never saw the tokens")
+		t.Fatal("the model never saw the tokens")
 	}
 	// 3. The model never emitted the real value as a tool argument.
 	raw, tokenized := countToolInputs(stream)
@@ -164,7 +164,9 @@ func countToolInputs(stream string) (raw, tokenized int) {
 
 // TestCountToolInputs covers the counter's filters. The e2e test that exercises it is
 // skipped by default, so without this a parser that always returned (0, 1) would make
-// the third assertion vacuous and nothing in `go test ./...` would notice.
+// the third assertion vacuous and nothing in `go test ./...` would notice. Cases 3, 4
+// and 5 each flip to 1 under exactly one removed guard, so every filter is pinned by a
+// case that fails when it goes.
 func TestCountToolInputs(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -182,13 +184,35 @@ func TestCountToolInputs(t *testing.T) {
 			toks:   1,
 		},
 		{
-			// Neither an assistant text block (MessageDisplay puts the real value
-			// there) nor a tool_result is a tool call, and a junk line must not stop
-			// the walk.
-			name: "text, tool_result and junk are ignored",
-			stream: `{"type":"assistant","message":{"content":[{"type":"text","text":"ssh ` + e2eRawValue + `"}]}}
+			// A tool call in a message that is not an assistant one: only the
+			// message-type guard keeps it out of the count.
+			name:   "a tool call in a message that is not an assistant one",
+			stream: `{"type":"user","message":{"content":[{"type":"tool_use","input":{"command":"ssh ` + e2eRawValue + `"}}]}}`,
+		},
+		{
+			// A block that is not a tool call but does carry an input: only the
+			// block-type guard keeps it out of the count.
+			name:   "a content block that is not a tool call, carrying an input",
+			stream: `{"type":"assistant","message":{"content":[{"type":"text","input":{"command":"ssh ` + e2eRawValue + `"}}]}}`,
+		},
+		{
+			// Valid JSON whose content array fails to decode on its second element:
+			// the first is already in the slice when the error comes back, so only
+			// the unmarshal guard keeps it out of the count.
+			name:   "a line that fails to unmarshal after a tool call was decoded",
+			stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"ssh ` + e2eRawValue + `"}},{"type":123}]}}`,
+		},
+		{
+			// A junk line must be skipped and not end the walk: the tool call that
+			// counts comes after it, and the blocks in between are ignored. This one
+			// pins no single guard — it fails only against a parser that stops on a
+			// line it cannot read.
+			name: "junk first, then ignored blocks, then a tool call",
+			stream: `not json at all
+{"type":"assistant","message":{"content":[{"type":"text","text":"ssh ` + e2eRawValue + `"}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","content":"ssh ` + e2eRawValue + `"}]}}
-not json at all`,
+{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"ssh <USER_1>@<HOST_1>"}}]}}`,
+			toks: 1,
 		},
 	}
 	for _, tc := range cases {
