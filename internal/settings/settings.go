@@ -47,6 +47,12 @@ func Load(path string) (File, error) {
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	// A JSON null decodes into a nil map without an error. Handing that back would
+	// panic the first caller that writes a key — init, on a settings file the user
+	// may not even have written. "No settings" is an empty File, same as a missing one.
+	if f == nil {
+		f = File{}
+	}
 	// A Decoder stops at the first value, so the stream must end here. This is
 	// stricter than dec.More(), which at top level also accepts a stray closing
 	// brace or bracket.

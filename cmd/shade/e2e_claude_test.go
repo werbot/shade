@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/werbot/shade/internal/settings"
 )
 
 // e2ePrompt drives the one path the phase's acceptance criterion is about: the model
@@ -160,6 +162,41 @@ func countToolInputs(stream string) (raw, tokenized int) {
 		}
 	}
 	return raw, tokenized
+}
+
+// TestClaudeCodeAcceptsTheGeneratedPlugin is the guard the install path lacked: it
+// asks Claude Code itself to validate the manifest shade writes. The pre-fix manifest
+// was rejected for a missing owner object — silently, with init still exiting 0 and
+// the plugin never loading, so no hook ever ran. `claude plugin validate` exits
+// non-zero on exactly that error, and needs no credentials. Skipped by default:
+// `go test ./...` must not run the real CLI.
+func TestClaudeCodeAcceptsTheGeneratedPlugin(t *testing.T) {
+	if os.Getenv("SHADE_E2E_CLAUDE") == "" {
+		t.Skip("set SHADE_E2E_CLAUDE=1: the test runs the real claude CLI")
+	}
+	claude, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude is not on PATH: %v", err)
+	}
+	// An isolated HOME keeps the validation away from the real ~/.claude; validate
+	// needs no credentials, so a fresh home is enough.
+	t.Setenv("HOME", t.TempDir())
+	// The manifest is validated on its own, so the binary path inside the hooks does
+	// not matter — only the shape of the three files does.
+	dir := t.TempDir()
+	for name, body := range settings.PluginFiles("/usr/local/bin/shade") {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := exec.Command(claude, "plugin", "validate", dir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("claude rejected the plugin shade writes: %v\n%s", err, out)
+	}
 }
 
 // TestCountToolInputs covers the counter's filters. The e2e test that exercises it is

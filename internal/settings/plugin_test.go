@@ -27,6 +27,25 @@ func TestPluginFilesMatchFixtures(t *testing.T) {
 	}
 }
 
+// The marketplace manifest must carry an owner object: Claude Code 2.1.295 rejects
+// the whole file without it, and rejects it silently — init reports success while the
+// plugin never loads. The fixture pins the bytes; this names the field, so a fixture
+// edited in step with the code cannot drop it unnoticed.
+func TestMarketplaceDeclaresItsOwner(t *testing.T) {
+	files := settings.PluginFiles(shadeBin)
+	var doc struct {
+		Owner struct {
+			Name string `json:"name"`
+		} `json:"owner"`
+	}
+	if err := json.Unmarshal(files[".claude-plugin/marketplace.json"], &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Owner.Name == "" {
+		t.Fatalf("the marketplace has no owner: %s", files[".claude-plugin/marketplace.json"])
+	}
+}
+
 func TestPluginHooksCallTheBinaryWithoutAShell(t *testing.T) {
 	files := settings.PluginFiles(shadeBin)
 	var doc struct {

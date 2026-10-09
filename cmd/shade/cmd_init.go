@@ -24,11 +24,6 @@ func init() {
 	})
 }
 
-// trustReminder closes every run. The plugin is registered but not trusted yet, and
-// Claude Code runs no hook of an untrusted plugin — without this line the install
-// would look complete while doing nothing.
-const trustReminder = "next Claude Code launch: confirm the shade plugin when asked, the hooks stay off until it is trusted"
-
 // tempBinaryWarning names the one silent failure of the install: a hook pointing at
 // a binary in a temporary build directory stops working as soon as that directory
 // is cleaned, and nothing in the session says so.
@@ -119,10 +114,6 @@ func runInit(args []string, stdio IO) int {
 		if err := applySettings(stdio, projectPath, project, dryRun); err != nil {
 			return fail(stdio, "init", 1, err)
 		}
-	}
-
-	if !dryRun {
-		fmt.Fprintln(stdio.Out, trustReminder)
 	}
 	return 0
 }

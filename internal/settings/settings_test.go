@@ -217,6 +217,27 @@ func TestLoadRejectsTrailingData(t *testing.T) {
 	}
 }
 
+// A JSON null decodes into a nil map with no error. Handing that nil back would panic
+// the first writer — init calls AddMarketplace right after Load — so a null file must
+// read as "no settings", exactly like a missing one.
+func TestLoadTreatsNullAsAnEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte("null\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := settings.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f == nil {
+		t.Fatal("a null file gave a nil File: the first write would panic")
+	}
+	f.AddMarketplace("shade", "/dir")
+	if len(f["extraKnownMarketplaces"].(map[string]any)) != 1 {
+		t.Fatalf("the loaded File is not writable: %+v", f)
+	}
+}
+
 func TestBytesIsCanonicalAndStable(t *testing.T) {
 	f := settings.File{
 		"b": "1",

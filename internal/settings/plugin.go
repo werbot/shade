@@ -48,6 +48,13 @@ func PluginFiles(shadeBin string) map[string][]byte {
 	docs := map[string]File{
 		".claude-plugin/marketplace.json": {
 			"name": MarketplaceName,
+			// owner is required: Claude Code 2.1.295 rejects the whole manifest
+			// without it, and the failure is silent — init still reports success
+			// while the plugin never loads and no hook ever runs.
+			"owner": map[string]any{"name": MarketplaceName},
+			// description is only a `claude plugin validate` warning, but it costs
+			// one line and keeps the validate guard below free of noise.
+			"description": "shade: Claude Code hooks that mask secrets in tool output and restore them before a tool runs",
 			"plugins": []any{
 				map[string]any{"name": PluginName, "source": "./"},
 			},
