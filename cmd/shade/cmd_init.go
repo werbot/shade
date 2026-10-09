@@ -20,7 +20,7 @@ import (
 func init() {
 	Register(Command{
 		Name: "init",
-		Help: "install the claude code hooks",
+		Help: "install the claude code hooks and skills",
 		Run:  runInit,
 	})
 }
