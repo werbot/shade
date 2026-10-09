@@ -92,14 +92,17 @@ func TestClaudeCodeEndToEndAnonymizesAndRestores(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	session.Stdout, session.Stderr = &stdout, &stderr
 	if err := session.Run(); err != nil {
-		t.Fatalf("claude session: %v\nstderr: %s", err, stderr.String())
+		// An unauthenticated session exits 1 with the error JSON on stdout and an
+		// empty stderr, so this is the branch that has to name the cause: the
+		// isolated HOME has no ~/.claude/settings.json, and claude then needs its
+		// credentials in the environment — ANTHROPIC_BASE_URL plus
+		// ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY.
+		t.Fatalf("claude session: %v (is claude authenticated? the isolated HOME "+
+			"has no ~/.claude/settings.json, so the credentials must come from "+
+			"ANTHROPIC_BASE_URL plus ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY)\n"+
+			"stdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
 	stream := stdout.String()
-	if strings.Contains(stream, `"authentication_failed"`) {
-		t.Fatalf("the session is not authenticated: the isolated HOME has no "+
-			"~/.claude/settings.json, so claude needs its credentials in the "+
-			"environment. stderr: %s", stderr.String())
-	}
 
 	// 1. The tool ran for real: PreToolUse restored what the model wrote.
 	got, err := os.ReadFile(sshLog)
@@ -127,8 +130,8 @@ func TestClaudeCodeEndToEndAnonymizesAndRestores(t *testing.T) {
 // that carry a placeholder. The tool_use block records what the model emitted — the
 // token — and not the updatedInput PreToolUse returns, so this is the field the third
 // assertion can be made on. Assistant *text* is not: MessageDisplay rewrites the
-// displayed text back to the real values on purpose (§9), and the stored message keeps
-// the tokens.
+// displayed text back to the real values on purpose (§9), and the stored transcript
+// keeps the tokens — only the display shows them.
 func countToolInputs(stream string) (raw, tokenized int) {
 	for _, line := range strings.Split(stream, "\n") {
 		var msg struct {
@@ -157,4 +160,43 @@ func countToolInputs(stream string) (raw, tokenized int) {
 		}
 	}
 	return raw, tokenized
+}
+
+// TestCountToolInputs covers the counter's filters. The e2e test that exercises it is
+// skipped by default, so without this a parser that always returned (0, 1) would make
+// the third assertion vacuous and nothing in `go test ./...` would notice.
+func TestCountToolInputs(t *testing.T) {
+	cases := []struct {
+		name      string
+		stream    string
+		raw, toks int
+	}{
+		{
+			name:   "a tool call carrying the real value",
+			stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"ssh ` + e2eRawValue + `"}}]}}`,
+			raw:    1,
+		},
+		{
+			name:   "a tool call carrying the token",
+			stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"ssh <USER_1>@<HOST_1>"}}]}}`,
+			toks:   1,
+		},
+		{
+			// Neither an assistant text block (MessageDisplay puts the real value
+			// there) nor a tool_result is a tool call, and a junk line must not stop
+			// the walk.
+			name: "text, tool_result and junk are ignored",
+			stream: `{"type":"assistant","message":{"content":[{"type":"text","text":"ssh ` + e2eRawValue + `"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"ssh ` + e2eRawValue + `"}]}}
+not json at all`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, toks := countToolInputs(tc.stream)
+			if raw != tc.raw || toks != tc.toks {
+				t.Errorf("countToolInputs = (%d, %d), want (%d, %d)", raw, toks, tc.raw, tc.toks)
+			}
+		})
+	}
 }
