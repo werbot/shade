@@ -13,11 +13,14 @@ import (
 type Rewriter func(s string) (string, bool)
 
 // RewriteJSON walks every string in a JSON document and applies f to it, leaving
-// object keys, numbers, booleans and null untouched: an argument the hook never
-// meant to rewrite must not be re-encoded. It reports whether anything changed; an
-// unchanged document is returned byte-for-byte, so a caller that prints only on
-// change never perturbs the tool's data. A document that does not parse, or that has
-// trailing data after it, is an error rather than something to pass along.
+// object keys, numbers, booleans and null untouched: a type the hook never meant to
+// rewrite must not be re-encoded. It reports whether anything changed; an unchanged
+// document is returned byte-for-byte, so a caller that prints only on change never
+// perturbs the tool's data. When something did change the document is re-marshalled
+// whole, so untouched strings have their escapes normalised and keys are re-sorted —
+// the result is semantically identical, not byte-identical. A document that does not
+// parse, or that has trailing data after it, is an error rather than something to
+// pass along.
 func RewriteJSON(raw json.RawMessage, f Rewriter) (out json.RawMessage, changed bool, err error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	// Without UseNumber a number becomes a float64: 1.0 turns into 1 and

@@ -11,6 +11,13 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// FailOpenLog is the fail_policy value that lets an answer through with the values
+// that could be restored and a warning about the tokens that could not. Every other
+// value — including a missing one — is fail_closed. The CLI and the hook both compare
+// FailPolicy against this constant: a bare literal in either place would drift from
+// the other on a rename and fail in the unsafe direction.
+const FailOpenLog = "fail_open_log"
+
 // Config — the settings read so far. There are exactly as many fields as there are
 // consumers: FailPolicy is read by the CLI (fail_open_log turns exit code 3 into
 // a warning), EntitiesTTL — entities prune, PromptGate — the UserPromptSubmit gate.

@@ -25,10 +25,8 @@ const (
 type Event struct {
 	Name         string          `json:"hook_event_name"`
 	CWD          string          `json:"cwd"`
-	SessionID    string          `json:"session_id"`
 	Prompt       string          `json:"prompt"`
 	ToolName     string          `json:"tool_name"`
-	Source       string          `json:"source"`
 	Delta        string          `json:"delta"`
 	Final        bool            `json:"final"`
 	ToolInput    json.RawMessage `json:"tool_input"`

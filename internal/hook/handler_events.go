@@ -15,17 +15,15 @@ import (
 	"github.com/werbot/shade/internal/rules"
 )
 
-// failOpenLog is the policy under which an unresolved placeholder does not stop the
-// tool call. Any other value — including a missing one — is fail_closed, exactly as
-// the CLI reads it.
-const failOpenLog = "fail_open_log"
-
-// skipTools are the tools whose arguments the hook never restores. The list is taken
-// as is from the reference implementation (redact_output.py) the spec names.
+// skipTools are the tools whose arguments the hook never restores. The list governs
+// the restore side only — PreToolUse — where skipping means "leave this tool's
+// arguments as the model wrote them". Its five entries carry queries or prose, so
+// restoring in them is a no-op or harmless. Write is deliberately not on it: Write's
+// whole argument is the content to be written, so skipping would leave a file holding
+// the literal token the model was told to write.
 var skipTools = map[string]bool{
 	"WebFetch":        true,
 	"WebSearch":       true,
-	"Write":           true,
 	"ToolSearch":      true,
 	"ExitPlanMode":    true,
 	"AskUserQuestion": true,
@@ -93,7 +91,7 @@ func (h Handler) preToolUse(ctx context.Context, e Engine, ev Event) (Response, 
 	}
 	if len(r.Unresolved) > 0 {
 		tokens := tokenList(r.Unresolved)
-		if cfg.FailPolicy == failOpenLog {
+		if cfg.FailPolicy == config.FailOpenLog {
 			res := Response{SystemMessage: "shade: unresolved placeholders: " + tokens}
 			if r.Changed {
 				res.HookSpecificOutput = &Specific{HookEventName: EventPreToolUse, UpdatedInput: r.Out}
@@ -237,7 +235,9 @@ func endsInsideToken(delta string) bool {
 		return false
 	}
 	last := toks[len(toks)-1]
-	if strings.HasSuffix(last.Raw, ">") || strings.HasSuffix(last.Raw, "＞") {
+	// The tolerant finder also matches the HTML-escaped form, where the closing
+	// bracket is spelled &gt; and the raw text is not just the token.
+	if strings.HasSuffix(last.Raw, ">") || strings.HasSuffix(last.Raw, "＞") || strings.HasSuffix(last.Raw, "&gt;") {
 		return false
 	}
 	return last.End == len(strings.TrimRight(delta, " \t\n\f\r"))

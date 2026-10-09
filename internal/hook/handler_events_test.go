@@ -49,7 +49,7 @@ func TestHandlerFailsOpenOnEngineError(t *testing.T) {
 func TestSessionStartReturnsDirective(t *testing.T) {
 	home, repo := t.TempDir(), gitDir(t)
 	h := newHandler(t, home)
-	res, err := h.Handle(ctx, hook.Event{Name: hook.EventSessionStart, CWD: repo, Source: "startup"})
+	res, err := h.Handle(ctx, hook.Event{Name: hook.EventSessionStart, CWD: repo})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +66,9 @@ func TestSessionStartReturnsDirective(t *testing.T) {
 // assembled from half a token and strand the closing bracket in the next frame.
 func TestMessageDisplayLeavesATruncatedTokenAlone(t *testing.T) {
 	e := &fakeEngine{restoreFn: func(s string) (core.Result, error) {
-		// The real finder restores both the canonical form and the one truncated at
-		// max_tokens, which has no closing bracket.
+		// The real finder restores the canonical form, the one truncated at
+		// max_tokens (no closing bracket) and the HTML-escaped one.
+		s = strings.ReplaceAll(s, "&lt;HOST_1&gt;", "db.prod.local")
 		s = strings.ReplaceAll(s, "<HOST_1>", "db.prod.local")
 		return core.Result{Text: strings.ReplaceAll(s, "<HOST_1", "db.prod.local")}, nil
 	}}
@@ -99,6 +100,16 @@ func TestMessageDisplayLeavesATruncatedTokenAlone(t *testing.T) {
 	if res.HookSpecificOutput == nil || res.HookSpecificOutput.DisplayContent != "host is db.prod.local\n" {
 		t.Fatalf("got %+v", res)
 	}
+	// An HTML-escaped closed token at the very end of a non-final frame is closed, not
+	// cut: the tolerant finder matches the escaped form whole, so it must be restored.
+	res, err = h.Handle(ctx, hook.Event{Name: hook.EventMessageDisplay, Delta: "x &lt;HOST_1&gt;"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HookSpecificOutput == nil || res.HookSpecificOutput.DisplayContent != "x db.prod.local" {
+		t.Fatalf("the escaped closed token was left on screen: %+v", res)
+	}
+
 	res, err = h.Handle(ctx, hook.Event{Name: hook.EventMessageDisplay, Delta: "no tokens here\n"})
 	if err != nil {
 		t.Fatal(err)

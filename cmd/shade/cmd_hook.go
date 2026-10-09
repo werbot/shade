@@ -28,6 +28,9 @@ func runHook(args []string, stdio IO) int {
 	}
 	raw, err := io.ReadAll(stdio.In)
 	if err != nil {
+		// fail-open: every runtime failure of this command reports to stderr and still
+		// returns 0. A non-zero exit at Claude Code means "block" or "message the
+		// model", so a diagnostic must not be turned into a session block.
 		return fail(stdio, "hook", 0, fmt.Errorf("reading stdin: %w", err))
 	}
 	ev, err := hook.ParseEvent(raw)

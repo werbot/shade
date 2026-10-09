@@ -90,7 +90,22 @@ func TestPreToolUseRestoresAndSkipsUnchangedInput(t *testing.T) {
 		t.Fatalf("the object was re-encoded: %s", res.HookSpecificOutput.UpdatedInput)
 	}
 
-	for _, name := range []string{"WebFetch", "WebSearch", "Write", "ToolSearch", "ExitPlanMode", "AskUserQuestion"} {
+	// Write is not on the skip list: its whole argument is the content to be written,
+	// so a token left in it would put the literal placeholder on disk.
+	res, err = h.Handle(ctx, hook.Event{
+		Name: hook.EventPreToolUse, CWD: "/repo", ToolName: "Write",
+		ToolInput: json.RawMessage(`{"file_path":"/repo/ssh.txt","content":"ssh <HOST_1>\n"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HookSpecificOutput == nil || !strings.Contains(string(res.HookSpecificOutput.UpdatedInput), "db.prod.local") {
+		t.Fatalf("the content of a Write was not restored: %+v", res)
+	}
+
+	// The remaining five carry queries or prose, so restoring in them is a no-op or
+	// harmless — skipping them keeps the hook out of their arguments.
+	for _, name := range []string{"WebFetch", "WebSearch", "ToolSearch", "ExitPlanMode", "AskUserQuestion"} {
 		res, err := h.Handle(ctx, hook.Event{
 			Name: hook.EventPreToolUse, CWD: "/repo", ToolName: name,
 			ToolInput: json.RawMessage(`{"x":"<HOST_1>"}`),
