@@ -381,17 +381,20 @@ from the standard library.
 
 ## 📌 Status
 
-Phase 1 is the core and the CLI, which is what this repository contains.
+Phase 1 — the core and the CLI — is complete. The rest is ahead of us; the code
+is already sliced for it, but none of the adapters exist yet.
 
-The code is written for a larger system, and the seams are visible:
-`core.Engine` already takes an adapter name (`cli`, and later `hook`, `mcp`,
-`proxy`) which it records in the journal, the schema carries a `packages` table
-for distributing rule packages and a `rule_hits` table for usage statistics, and
-`Scan` is the read-only path that an MCP `scan` tool would use. None of those
-adapters exist yet.
-
-Not implemented today: hook/MCP/proxy adapters, streaming mode, rule packages,
-a usage UI, and any LLM provider integration.
+- [x] Core engine — `Anonymize`, `Restore`, `Scan`
+- [x] Rule engine — keyword prefilter, entropy threshold, validators, span merging
+- [x] Encrypted store — projects, entities, audit journal, SQLite migrations
+- [x] Builtin rule set — 46 rules across `keys`, `credentials`, `pii` (37 active by default)
+- [x] gitleaks rule import with a per-rule skip report
+- [x] CLI — `anon`, `deanon`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
+- [ ] Hook, MCP and proxy adapters — `core.Engine` already takes an adapter name and records it in the journal, but it is only ever `cli` today
+- [ ] MCP `scan` tool — `Engine.Scan` is the read-only path it would use
+- [ ] Rule packages — the `packages` table exists; nothing writes to it yet
+- [ ] Usage UI — `rule_hits` is written on every anonymization; nothing reads it yet
+- [ ] Streaming mode and LLM provider integration — the config keys are declared but have no consumer
 
 ## 📄 License
 
