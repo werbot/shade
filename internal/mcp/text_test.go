@@ -254,8 +254,10 @@ func TestToolsDoNotLeakValues(t *testing.T) {
 // that quietly drops out of the schema, or sneaks back into it, must not pass unnoticed.
 //
 // Scan's own returned text is not asserted here because the tool must discard it: the
-// fake hands back the input with the value still in it, so a handler that passed it on
-// would fail the fragment check below.
+// fake hands back the input with the value still in it. spansOutput has no field that
+// text could travel in, so the fragment check below is a canary, not a proof — it would
+// catch a future field carrying Scan's text or a matched fragment, not a handler that
+// "passed it on" through the schema as it stands.
 func TestScanReportsRulesWithoutFragmentsOrOffsets(t *testing.T) {
 	cs := toolSession(t, t.TempDir(), fakeEngine{secret: testSecret, token: testToken})
 	res := callTool(t, cs, "scan", map[string]any{"text": "mail " + testSecret})
