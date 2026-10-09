@@ -66,8 +66,10 @@ func buildShade(t *testing.T) string {
 }
 
 // runHookProcess runs the built CLI as Claude Code does: the payload on stdin, the state
-// directory in the environment, and the working directory somewhere other than the
-// payload's cwd.
+// directory in the environment, and a working directory of its own. The working directory
+// is not the payload's cwd, but that alone proves nothing — SessionStart answers for any
+// cwd — so the "cwd comes from the payload" contract is covered in-process by
+// TestHookOpensThePayloadProject, not here.
 func runHookProcess(t *testing.T, bin, home, workDir, payload string) (int, string, string) {
 	t.Helper()
 	env := slices.DeleteFunc(os.Environ(), func(e string) bool {
@@ -139,6 +141,74 @@ func TestHookProcessContract(t *testing.T) {
 		}
 		if !strings.Contains(out, "<HOST_1>") || !strings.Contains(out, "<USER_1>") {
 			t.Fatalf("the answer has no placeholders: %q", out)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatalf("stdout is not exactly one JSON document: %q (%v)", out, err)
+		}
+	})
+
+	// The gate is the one response assembled from a prompt — the closest thing to raw
+	// input — so it gets the same process-level leak check as the tool output.
+	t.Run("prompt gate blocks without printing the value", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(repo, ".shade.toml"),
+			[]byte("prompt_gate = \"on\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		payload := fmt.Sprintf(
+			`{"hook_event_name":"UserPromptSubmit","cwd":%q,"prompt":"connect to ssh user@db.prod.local"}`,
+			repo)
+		code, out, errOut := runHookProcess(t, bin, home, workDir, payload)
+		if code != 0 {
+			t.Fatalf("code=%d err=%q", code, errOut)
+		}
+		if errOut != "" {
+			t.Fatalf("stderr must be empty, got %q", errOut)
+		}
+		if strings.Contains(out, "db.prod.local") || strings.Contains(errOut, "db.prod.local") {
+			t.Fatalf("the raw value leaked: out=%q err=%q", out, errOut)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatalf("stdout is not exactly one JSON document: %q (%v)", out, err)
+		}
+		if doc["decision"] != "block" {
+			t.Fatalf("the gate must block a prompt with an ssh target: %q", out)
+		}
+	})
+
+	// The deny is the other response built from raw input: its reason comes from tokens
+	// found in a tool argument. The store is seeded first so a real value is in play —
+	// otherwise "no value in the answer" would be true for want of anything to leak.
+	t.Run("pre tool use deny names tokens and no value", func(t *testing.T) {
+		seed := fmt.Sprintf(
+			`{"hook_event_name":"PostToolUse","cwd":%q,"tool_name":"Bash",`+
+				`"tool_response":{"stdout":"ssh user@db.prod.local\n"}}`, repo)
+		if code, _, errOut := runHookProcess(t, bin, home, workDir, seed); code != 0 {
+			t.Fatalf("seeding the store: code=%d err=%q", code, errOut)
+		}
+		// fail_closed is the default: <USER_1> resolves, <HOST_9> does not, and the
+		// call is denied with the tokens named and the value behind <USER_1> withheld.
+		payload := fmt.Sprintf(
+			`{"hook_event_name":"PreToolUse","cwd":%q,"tool_name":"Bash",`+
+				`"tool_input":{"command":"ssh <USER_1>@<HOST_9>"}}`, repo)
+		code, out, errOut := runHookProcess(t, bin, home, workDir, payload)
+		if code != 0 {
+			t.Fatalf("code=%d err=%q", code, errOut)
+		}
+		if errOut != "" {
+			t.Fatalf("stderr must be empty, got %q", errOut)
+		}
+		if strings.Contains(out, "db.prod.local") || strings.Contains(errOut, "db.prod.local") {
+			t.Fatalf("the raw value leaked: out=%q err=%q", out, errOut)
+		}
+		if !strings.Contains(out, "<HOST_9>") {
+			t.Fatalf("the deny must name the unresolved token: %q", out)
+		}
+		// <USER_1> was seeded, so it resolved and must not be listed: if the seed had
+		// failed, both tokens would be unresolved and the check above would still pass.
+		if strings.Contains(out, "<USER_1>") {
+			t.Fatalf("the seeded token did not resolve: %q", out)
 		}
 		var doc map[string]any
 		if err := json.Unmarshal([]byte(out), &doc); err != nil {
