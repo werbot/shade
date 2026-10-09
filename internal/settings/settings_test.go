@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -142,6 +143,67 @@ func TestLoadMissingFileIsEmptyNotAnError(t *testing.T) {
 	}
 	if len(f) != 0 {
 		t.Fatalf("want an empty file, got %v", f)
+	}
+}
+
+// The declaration is the step that makes the plugin load at all, and Claude Code
+// reads it only from the user settings: the shape has to be exactly
+// extraKnownMarketplaces[name].source = {source:"directory", path:…}.
+func TestAddMarketplaceDeclaresADirectorySource(t *testing.T) {
+	f := load(t, settingsFixture)
+	f.AddMarketplace("shade", "/home/user/.shade/claude")
+
+	markets, ok := f["extraKnownMarketplaces"].(map[string]any)
+	if !ok {
+		t.Fatalf("extraKnownMarketplaces is not an object: %v", f["extraKnownMarketplaces"])
+	}
+	entry, ok := markets["shade"].(map[string]any)
+	if !ok || len(entry) != 1 {
+		t.Fatalf("the marketplace entry must hold nothing but source: %v", markets["shade"])
+	}
+	source, ok := entry["source"].(map[string]any)
+	if !ok || len(source) != 2 || source["source"] != "directory" || source["path"] != "/home/user/.shade/claude" {
+		t.Fatalf("the declaration must name a directory source: %v", entry["source"])
+	}
+
+	want := map[string]any{"source": map[string]any{"source": "github", "repo": "acme/team-tools"}}
+	if !reflect.DeepEqual(markets["team-tools"], want) {
+		t.Fatalf("a foreign marketplace was changed: %v", markets["team-tools"])
+	}
+}
+
+// Load and Save rewrite the whole settings file, so a foreign number must come back
+// as it was written: 1.0 must not become 1, and an integer past 2^53 must not lose
+// its low bit.
+func TestLoadKeepsNumbersAsWritten(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	original := "{\n  \"ratio\": 1.0,\n  \"timeout\": 9007199254740993\n}\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := load(t, path)
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, []byte(original)) {
+		t.Fatalf("a number was rewritten:\n%s\nwant:\n%s", got, original)
+	}
+}
+
+// Load decodes with a json.Decoder to keep the number literals, and a Decoder stops
+// at the first value: a second one must be an error, as json.Unmarshal made it.
+func TestLoadRejectsTrailingData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte("{\"a\": 1} {\"b\": 2}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := settings.Load(path); err == nil {
+		t.Fatal("a second JSON value was silently ignored")
 	}
 }
 

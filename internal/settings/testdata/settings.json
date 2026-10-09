@@ -2,6 +2,14 @@
   "enabledPlugins": {
     "formatter@anthropic-tools": true
   },
+  "extraKnownMarketplaces": {
+    "team-tools": {
+      "source": {
+        "source": "github",
+        "repo": "acme/team-tools"
+      }
+    }
+  },
   "hooks": {
     "PostToolUse": [
       {

@@ -5,6 +5,7 @@
 package settings
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,8 +38,17 @@ func Load(path string) (File, error) {
 		return nil, err
 	}
 	f := File{}
-	if err := json.Unmarshal(b, &f); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	// UseNumber keeps every number as the literal the user wrote: Save rewrites the
+	// whole file, and float64 would turn 1.0 into 1 and lose the low bits of an
+	// integer past 2^53. Nothing in this package reads a number.
+	dec.UseNumber()
+	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// json.Unmarshal rejected trailing data; Decode alone would silently ignore it.
+	if dec.More() {
+		return nil, fmt.Errorf("%s: unexpected data after the JSON object", path)
 	}
 	return f, nil
 }
