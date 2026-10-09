@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -91,4 +95,31 @@ func mergeFile(c *Config, path string) error {
 		return fmt.Errorf("config %s: %w", path, err)
 	}
 	return nil
+}
+
+// MaxAgeDays is how many days fit in a time.Duration. Beyond that n*24h
+// overflows int64 and gives a negative age.
+const MaxAgeDays = int64(math.MaxInt64) / int64(24*time.Hour)
+
+// ParseAge converts an age like 30d into a duration. The unit d is a day: ages in
+// the CLI are given in days (`--older-than 30d`, `--since 7d`, `entities_ttl`), while
+// time.ParseDuration does not know such a unit.
+//
+// The overflow is checked explicitly, rather than relying on "nobody will
+// write such an age": a negative age in PruneEntities turns into a boundary in
+// the future, and `--older-than 200000d` would wipe all entities of the project — the values
+// live only in value_enc, so the loss cannot be rolled back.
+func ParseAge(s string) (time.Duration, error) {
+	days, ok := strings.CutSuffix(s, "d")
+	if !ok {
+		return 0, fmt.Errorf("age %q: expected a number of days with a d suffix, for example 30d", s)
+	}
+	n, err := strconv.Atoi(days)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("age %q: expected a number of days with a d suffix, for example 30d", s)
+	}
+	if int64(n) > MaxAgeDays {
+		return 0, fmt.Errorf("age %q: too large, %dd is the maximum", s, MaxAgeDays)
+	}
+	return time.Duration(n) * 24 * time.Hour, nil
 }

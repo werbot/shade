@@ -56,6 +56,7 @@ func NewServer(home string, open Opener, diag io.Writer) *sdk.Server {
 	}, readDirective)
 	addTextTools(srv, home, open, diag)
 	addRuleTools(srv, open)
+	addAuditTools(srv, open)
 	return srv
 }
 

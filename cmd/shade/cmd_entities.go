@@ -51,7 +51,7 @@ func runEntitiesList(args []string, stdio IO) int {
 	}
 	defer e.Close()
 
-	list, err := e.Store().ListEntities(ctx, e.ProjectID(), defaultListLimit)
+	list, err := e.Store().ListEntities(ctx, e.ProjectID(), store.DefaultListLimit)
 	if err != nil {
 		return fail(stdio, name, 1, err)
 	}
@@ -62,8 +62,8 @@ func runEntitiesList(args []string, stdio IO) int {
 	}
 	// The hidden tail is named explicitly: otherwise "there are no more entities" would read
 	// as a fact, not as a slice of the list.
-	if len(list) == defaultListLimit {
-		fmt.Fprintf(stdio.Out, "showing the first %d, the rest are hidden\n", defaultListLimit)
+	if len(list) == store.DefaultListLimit {
+		fmt.Fprintf(stdio.Out, "showing the first %d, the rest are hidden\n", store.DefaultListLimit)
 	}
 	return 0
 }
@@ -83,7 +83,7 @@ func runEntitiesPrune(args []string, stdio IO) int {
 	// the state directory, the key and the database, and a typo in the age must not create them.
 	var age time.Duration
 	if olderThan != "" {
-		if age, err = parseAge(olderThan); err != nil {
+		if age, err = config.ParseAge(olderThan); err != nil {
 			return fail(stdio, name, 2, err)
 		}
 	}
@@ -108,7 +108,7 @@ func runEntitiesPrune(args []string, stdio IO) int {
 		}
 		// An unparsable age from the config is an operational error, not a call
 		// error: the user has to fix it in the file, not in the arguments.
-		if age, err = parseAge(ttl); err != nil {
+		if age, err = config.ParseAge(ttl); err != nil {
 			return fail(stdio, name, 1, err)
 		}
 	}
