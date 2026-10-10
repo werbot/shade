@@ -320,6 +320,7 @@ takes neither.
 | `shade hook` | Answer a Claude Code hook event read from stdin (always exits 0 for a hook event) |
 | `shade init [--global] [--dry-run] [--keep-old-hook]` | Install the Claude Code hooks and skills: generate the plugin and wire it into the settings |
 | `shade mcp [--project DIR]` | Serve the MCP protocol on stdio for an MCP client |
+| `shade serve [--project DIR] [--port N]` | Run the anonymizing HTTP proxy for a coding agent on the loopback interface (default port 8787) |
 | `shade doctor` | Report the state of the environment without modifying it |
 | `shade test [--rules NAME] [--sample TEXT] [FILE]` | Run the active rule set against a sample, no writes |
 | `shade rules list` | List rules of the scope |
