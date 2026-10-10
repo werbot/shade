@@ -13,6 +13,7 @@ import (
 
 	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/core"
+	"github.com/werbot/shade/internal/placeholder"
 )
 
 // The paths the proxy routes. Matching is on r.URL.Path, so the query Claude Code attaches
@@ -86,8 +87,7 @@ func NewServer(o Options, open Opener) (*Server, error) {
 }
 
 // ServeHTTP routes by path. The four known paths reach their handlers; anything else is a
-// 404. The two Anthropic handlers anonymize and forward; chat_completions is still a
-// skeleton, its turn arriving with the OpenAI task.
+// 404. Every path anonymizes and forwards; only the request and answer walkers differ.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case pathMessages:
@@ -103,24 +103,43 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// shape is the three format-specific steps the shared forward runs: how a request body is
+// anonymized, how an answer is restored, and how a stream is piped. Anthropic and OpenAI differ
+// only in these, so the forwarding, the error arms and the policy are one path, not two.
+type shape struct {
+	anonymize func(context.Context, Engine, []byte) ([]byte, error)
+	restore   func(context.Context, Engine, []byte) ([]byte, []placeholder.Token, error)
+	pipe      func(context.Context, Engine, string, io.Reader, streamDst) error
+}
+
+// anthropicShape is the Anthropic Messages format.
+func (s *Server) anthropicShape() shape {
+	return shape{anonymize: s.anonymizeAnthropic, restore: s.restoreAnthropic, pipe: s.pipeAnthropicSSE}
+}
+
+// openaiShape is the OpenAI Chat Completions format.
+func (s *Server) openaiShape() shape {
+	return shape{anonymize: s.anonymizeOpenAI, restore: s.restoreOpenAI, pipe: s.pipeOpenAISSE}
+}
+
 // handleMessages serves the Anthropic Messages endpoint. The body is anonymized and the
 // directive injected before it goes out; the answer is handed back with the real values put
 // in, an event stream frame by frame.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
-	s.forwardAnthropic(w, r)
+	s.forward(w, r, s.anthropicShape())
 }
 
 // handleCountTokens serves the Anthropic token-counting endpoint. It shares the whole body
 // of handleMessages: count_tokens differs only by the absent max_tokens, and the counter
 // must count exactly what the real request would carry.
 func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
-	s.forwardAnthropic(w, r)
+	s.forward(w, r, s.anthropicShape())
 }
 
-// forwardAnthropic is what both Anthropic handlers do: read the body, anonymize it with the
-// directive injected, send it upstream and hand the answer back with the real values put
-// in. A body that cannot be anonymized is refused with a 502 that names no client text
-// (spec §11) and never reaches the upstream.
+// forward is what every handler does: read the body, anonymize it with the directive injected,
+// send it upstream and hand the answer back with the real values put in. A body that cannot be
+// anonymized is refused with a 502 that names no client text (spec §11) and never reaches the
+// upstream.
 //
 // A non-success status is sanitized: its body is anonymized rather than cut, so the wording
 // a client retries on survives while no value travels in it. A success is either an event
@@ -128,7 +147,7 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 // whose values are restored. An answer that is neither — a gateway's own page — is handed on
 // unmodified. A restore the engine itself failed is not: the policy decides, so a broken store
 // never silently hands the client an answer that may still hold placeholders.
-func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
+func (s *Server) forward(w http.ResponseWriter, r *http.Request, sh shape) {
 	ctx := r.Context()
 
 	body, err := io.ReadAll(r.Body)
@@ -143,7 +162,7 @@ func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
 	}
 	defer eng.Close()
 
-	anon, err := s.anonymizeAnthropic(ctx, eng, body)
+	anon, err := sh.anonymize(ctx, eng, body)
 	if err != nil {
 		writeShadeError(w, "request body could not be anonymized")
 		return
@@ -172,7 +191,7 @@ func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
 	// A stream is decided by the response's media type, not the request's: the request is
 	// always application/json, and stream:true only shows up in the answer.
 	if isEventStream(resp.Header.Get("Content-Type")) {
-		s.streamAnthropic(ctx, eng, resp, w)
+		s.streamSSE(ctx, eng, sh.pipe, resp, w)
 		return
 	}
 	raw, err := io.ReadAll(resp.Body)
@@ -189,7 +208,7 @@ func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
 	if cfg, err := config.Load(s.opts.Home, s.opts.Project); err == nil {
 		policy = cfg.FailPolicy
 	}
-	restored, unresolved, err := s.restoreAnthropic(ctx, eng, raw)
+	restored, unresolved, err := sh.restore(ctx, eng, raw)
 	if errors.Is(err, errNotAJSONAnswer) {
 		// Not a JSON object — a stream, or a gateway's own page. It is not this arm's to
 		// rewrite, so it goes on as it arrived.
@@ -232,11 +251,11 @@ func isEventStream(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/event-stream")
 }
 
-// streamAnthropic hands an event stream to the client frame by frame. The status and headers
-// go out first, so once the first frame is written the answer can no longer be replaced by an
-// error: a failure past that point is reported by pipeAnthropicSSE where it can be (an early
-// end) and the connection is left as it is.
-func (s *Server) streamAnthropic(ctx context.Context, eng Engine, resp *http.Response, w http.ResponseWriter) {
+// streamSSE hands an event stream to the client frame by frame. The status and headers go out
+// first, so once the first frame is written the answer can no longer be replaced by an error: a
+// failure past that point is reported by pipe where it can be (an early end) and the connection
+// is left as it is. pipe is the format's stream rewriter.
+func (s *Server) streamSSE(ctx context.Context, eng Engine, pipe func(context.Context, Engine, string, io.Reader, streamDst) error, resp *http.Response, w http.ResponseWriter) {
 	copyResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	dst, ok := w.(streamDst)
@@ -252,7 +271,7 @@ func (s *Server) streamAnthropic(ctx context.Context, eng Engine, resp *http.Res
 	if cfg, err := config.Load(s.opts.Home, s.opts.Project); err == nil {
 		mode = cfg.StreamMode
 	}
-	_ = s.pipeAnthropicSSE(ctx, eng, mode, resp.Body, dst)
+	_ = pipe(ctx, eng, mode, resp.Body, dst)
 }
 
 // nopFlushWriter adapts a ResponseWriter that does not implement Flush.
@@ -274,19 +293,14 @@ func copyResponseHeaders(w http.ResponseWriter, h http.Header) {
 	}
 }
 
-// handleChatCompletions serves the OpenAI Chat Completions endpoint.
+// handleChatCompletions serves the OpenAI Chat Completions endpoint. It shares the whole body
+// of the Anthropic handlers: the request and answer walkers differ, the forwarding does not.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	notImplemented(w)
+	s.forward(w, r, s.openaiShape())
 }
 
 // handleHello answers the probe Claude Code sends before its first request. The
 // documentation allows rejecting it, but a 200 is one line and keeps the client happy.
 func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-}
-
-// notImplemented is the body of a handler whose turn has not come yet. It is replaced
-// whole by the task that implements the endpoint.
-func notImplemented(w http.ResponseWriter) {
-	http.Error(w, "proxy: not implemented", http.StatusNotImplemented)
 }

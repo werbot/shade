@@ -321,7 +321,7 @@ takes neither.
 | `shade hook` | Answer a Claude Code hook event read from stdin (always exits 0 for a hook event) |
 | `shade init [--global] [--dry-run] [--keep-old-hook]` | Install the Claude Code hooks and skills: generate the plugin and wire it into the settings |
 | `shade mcp [--project DIR]` | Serve the MCP protocol on stdio for an MCP client |
-| `shade serve [--project DIR] [--port N]` | Run the anonymizing HTTP proxy for a coding agent on the loopback interface (default port 8787) |
+| `shade serve [--project DIR] [--port N]` | Run the anonymizing HTTP proxy for a coding agent on the loopback interface (default port 8787). It serves the Anthropic Messages shape (`/v1/messages`, `/v1/messages/count_tokens`) and the OpenAI Chat Completions shape (`/v1/chat/completions`), anonymizing each request and restoring each answer |
 | `shade doctor` | Report the state of the environment without modifying it |
 | `shade test [--rules NAME] [--sample TEXT] [FILE]` | Run the active rule set against a sample, no writes |
 | `shade rules list` | List rules of the scope |
@@ -550,7 +550,7 @@ MCP adapter and the skills. The rest is ahead of us; the code is already sliced 
 - [x] MCP `scan` tool — reports the types and the rules that found them, never the fragment or the offset
 - [ ] Rule packages — the `packages` table exists; nothing writes to it yet
 - [ ] Usage UI — `rule_hits` is written on every anonymization; nothing reads it yet
-- [ ] Streaming mode and LLM provider integration — `stream_mode`, `upstream` and `api_key_env` are now consumed by `shade serve`; the OpenAI provider is still ahead
+- [x] Streaming mode and LLM provider integration — `stream_mode`, `upstream` and `api_key_env` are consumed by `shade serve`; it serves both the Anthropic Messages shape and the OpenAI Chat Completions shape (streamed and non-streamed)
 
 ## 📄 License
 

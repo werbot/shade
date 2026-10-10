@@ -112,26 +112,21 @@ func upstreamServer(t *testing.T, apiKeyEnv, base string) (*recordingUpstream, *
 
 func TestRouterMatchesPathAndIgnoresQuery(t *testing.T) {
 	// The paths the client sends, with the query it attaches; the query must not change
-	// the handler, and neither may a missing trailing slash be needed to match. The two
-	// Anthropic handlers now forward, so a routed path answers with the upstream's 200 —
-	// a near-miss that fell to the 404 would be visible here.
+	// the handler, and neither may a missing trailing slash be needed to match. Every routed
+	// path now forwards, so a routed path answers with the upstream's 200 — a near-miss that
+	// fell to the 404 would be visible here.
 	_, s := upstreamServer(t, "", "")
 	body := []byte(`{"messages": [{"role": "user", "content": "hi"}]}`)
 	for _, target := range []string{
 		"/v1/messages?beta=true",
 		"/v1/messages/count_tokens",
+		"/v1/chat/completions",
 	} {
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body)))
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s: status = %d, want %d", target, rec.Code, http.StatusOK)
 		}
-	}
-	// chat_completions is still a skeleton: its turn has not come.
-	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
-	if rec.Code != http.StatusNotImplemented {
-		t.Errorf("/v1/chat/completions: status = %d, want %d", rec.Code, http.StatusNotImplemented)
 	}
 }
 

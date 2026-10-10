@@ -626,7 +626,7 @@ func TestStreamAnthropicBuffersWhenTheWriterCannotFlush(t *testing.T) {
 	}
 	w := &noFlushWriter{}
 	s := walkerServer(t, nil)
-	s.streamAnthropic(context.Background(), &answerEngine{}, resp, w)
+	s.streamSSE(context.Background(), &answerEngine{}, s.pipeAnthropicSSE, resp, w)
 	if got := w.body.String(); got != stream {
 		t.Errorf("buffered stream = %q, want the whole stream %q", got, stream)
 	}
