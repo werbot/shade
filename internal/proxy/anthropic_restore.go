@@ -12,6 +12,12 @@ import (
 	"github.com/werbot/shade/internal/placeholder"
 )
 
+// errNotAJSONAnswer marks a body the walker cannot read as a JSON object: an event stream, a
+// gateway's own page, an empty body. The handler forwards such a body unchanged. A failure
+// from the engine is a different error — the store refused for a reason other than a missing
+// value — and is answered by the fail policy instead.
+var errNotAJSONAnswer = errors.New("not a json answer")
+
 // restoreState collects what a walk of an answer produces: the tokens that could not be
 // resolved, in the order they first appear, and whether any field was rewritten at all.
 // The second is what lets an answer with nothing to restore come back byte-for-byte,
@@ -27,27 +33,29 @@ type restoreState struct {
 // The thinking and signature blocks are forwarded untouched for the same reason they are
 // not anonymized, and an answer with nothing to restore comes back byte-for-byte.
 //
-// A body that is not a JSON object comes back as an error; the handler then hands it on
-// unmodified rather than mangling it. The error is never echoed to the client: it can name
-// a parse offset, and spec §11 forbids leaking any of the body.
+// Two failures are told apart by the caller. A body that is not a JSON object wraps
+// errNotAJSONAnswer and is forwarded unchanged. An engine failure is returned as is, together
+// with the tokens collected so far, so the policy can refuse with their types; the error is
+// never echoed to the client, since it can name a parse offset and spec §11 forbids leaking
+// any of the body.
 func (s *Server) restoreAnthropic(ctx context.Context, e Engine, body []byte) ([]byte, []placeholder.Token, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var doc map[string]any
 	if err := dec.Decode(&doc); err != nil {
-		return nil, nil, fmt.Errorf("restore anthropic: %w", err)
+		return nil, nil, fmt.Errorf("%w: %w", errNotAJSONAnswer, err)
 	}
 	if doc == nil {
-		return nil, nil, errors.New("restore anthropic: body is not a json object")
+		return nil, nil, fmt.Errorf("%w: body is not a json object", errNotAJSONAnswer)
 	}
 	if err := dec.Decode(new(any)); err != io.EOF {
-		return nil, nil, errors.New("restore anthropic: trailing data after the json document")
+		return nil, nil, fmt.Errorf("%w: trailing data after the json document", errNotAJSONAnswer)
 	}
 
 	var st restoreState
 	if c, ok := doc["content"]; ok {
 		if err := s.restoreContent(ctx, e, c, &st); err != nil {
-			return nil, nil, err
+			return nil, st.unresolved, err
 		}
 	}
 	if !st.changed {
@@ -55,7 +63,7 @@ func (s *Server) restoreAnthropic(ctx context.Context, e Engine, body []byte) ([
 	}
 	out, err := marshalNoEscape(doc)
 	if err != nil {
-		return nil, nil, err
+		return nil, st.unresolved, err
 	}
 	return out, st.unresolved, nil
 }

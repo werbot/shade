@@ -27,12 +27,14 @@ import (
 // policy or the error path.
 type answerEngine struct {
 	fakeEngine
-	replace    [][2]string
-	unresolved []placeholder.Token
-	recordErr  error  // Result.RecordErr from both Anonymize and Restore
-	anonErr    error  // Anonymize's returned error
-	anonErrOn  string // Anonymize fails only on a text containing this, so the request body still goes through
-	blockErr   error  // RecordBlocked's returned error
+	replace      [][2]string
+	unresolved   []placeholder.Token
+	recordErr    error  // Result.RecordErr from both Anonymize and Restore
+	anonErr      error  // Anonymize's returned error
+	anonErrOn    string // Anonymize fails only on a text containing this, so the request body still goes through
+	restoreErr   error  // Restore's returned error, the hard engine failure
+	restoreErrOn string // Restore fails only on a text containing this, so earlier blocks still collect tokens
+	blockErr     error  // RecordBlocked's returned error
 
 	mu      sync.Mutex
 	seen    []string
@@ -49,6 +51,9 @@ func (e *answerEngine) Anonymize(_ context.Context, text string) (core.Result, e
 
 func (e *answerEngine) Restore(_ context.Context, text string) (core.Result, error) {
 	e.record(text)
+	if e.restoreErr != nil && strings.Contains(text, e.restoreErrOn) {
+		return core.Result{}, e.restoreErr
+	}
 	var unresolved []placeholder.Token
 	for _, tok := range e.unresolved {
 		if strings.Contains(text, tok.Raw) {
@@ -190,8 +195,9 @@ func TestRestoreNonStreamingToolUseInput(t *testing.T) {
 }
 
 // TestFailClosedAnswersBadGateway is the canary. Under fail_closed an answer with a token
-// that cannot be restored is refused 502 with a body that names the types and carries
-// neither a value nor a token — in the body or on the diagnostic writer.
+// that cannot be restored is refused 502 with a body that names the types and carries neither
+// a value nor a token. The journal write fails too, so diag is not empty and the value has a
+// path to it: that line is asserted to carry no value (a token is allowed — spec §9).
 //
 // The one field a value is allowed — required — to appear in is the body of a *successful*
 // answer, asserted positively at the end so a later reader cannot turn this into a blanket
@@ -204,7 +210,10 @@ func TestFailClosedAnswersBadGateway(t *testing.T) {
 	answer := []byte(`{"content":[{"type":"text","text":"the host is ` + token + `"}]}`)
 
 	var diag bytes.Buffer
-	eng := &answerEngine{unresolved: []placeholder.Token{{Type: "HOST", Raw: token}}}
+	eng := &answerEngine{
+		unresolved: []placeholder.Token{{Type: "HOST", Raw: token}},
+		blockErr:   errors.New("journal is read-only"),
+	}
 	rec := postMessages(answerUpstream(t, http.StatusOK, answer, eng, &diag, ""))
 
 	if rec.Code != http.StatusBadGateway {
@@ -217,8 +226,12 @@ func TestFailClosedAnswersBadGateway(t *testing.T) {
 	if got := rec.Body.String(); strings.Contains(got, value) || strings.Contains(got, token) {
 		t.Errorf("the refusal must carry neither the value nor the token: %q", got)
 	}
-	if got := diag.String(); strings.Contains(got, value) || strings.Contains(got, token) {
-		t.Errorf("diag must carry neither the value nor the token: %q", got)
+	line := diag.String()
+	if !strings.Contains(line, "stats not recorded") {
+		t.Errorf("diag = %q, want the failed journal write reported, so the canary is not vacuous", line)
+	}
+	if strings.Contains(line, value) {
+		t.Errorf("diag must carry no value: %q", line)
 	}
 
 	// The exception, positively: a successful answer's body is where the value belongs.
@@ -261,7 +274,7 @@ func TestRefusalJournalsABlockedRow(t *testing.T) {
 }
 
 // TestFailOpenLogPassesTheTokensThrough pins fail_open_log: the answer goes out as it came,
-// tokens and all, and diag names the types that stayed — never a value, never a token.
+// tokens and all, and diag names both the type and the token that stayed — never the value.
 func TestFailOpenLogPassesTheTokensThrough(t *testing.T) {
 	const value, token = "db.prod.local", "<HOST_1>"
 	answer := []byte(`{"content":[{"type":"text","text":"the host is ` + token + `"}]}`)
@@ -282,14 +295,14 @@ func TestFailOpenLogPassesTheTokensThrough(t *testing.T) {
 		t.Errorf("fail_open_log journaled %v, want nothing", got)
 	}
 	line := diag.String()
-	if !strings.Contains(line, "fail_open_log") || !strings.Contains(line, "HOST") {
-		t.Errorf("diag = %q, want the types that stayed unresolved", line)
+	if !strings.Contains(line, "fail_open_log") || !strings.Contains(line, "HOST") || !strings.Contains(line, token) {
+		t.Errorf("diag = %q, want the type and the token that stayed unresolved", line)
 	}
 	if !strings.Contains(line, "stats not recorded") {
 		t.Errorf("diag = %q, want the failed trace reported", line)
 	}
-	if strings.Contains(line, value) || strings.Contains(line, token) {
-		t.Errorf("diag = %q, must carry neither the value nor the token", line)
+	if strings.Contains(line, value) {
+		t.Errorf("diag = %q, must carry no value", line)
 	}
 }
 
@@ -358,6 +371,85 @@ func TestNonJSONAnswerIsPassedThroughUnmodified(t *testing.T) {
 	}
 	if eng.saw("<HOST_1>") {
 		t.Error("a stream must not be routed through the engine before the streaming task lands")
+	}
+}
+
+// TestRestoreFailureUnderFailClosedRefuses pins the engine-failure arm of fail_closed: an
+// answer the engine could not restore is refused, not handed on with its placeholders intact.
+// The refusal names the types collected before the failure, or a generic line when there are
+// none, and never carries the value or a token.
+func TestRestoreFailureUnderFailClosedRefuses(t *testing.T) {
+	const (
+		value = "db.prod.local"
+		token = "<HOST_1>"
+	)
+	cases := []struct {
+		name     string
+		answer   string
+		wantBody string
+	}{
+		{
+			name:     "types collected before the failure",
+			answer:   `{"content":[{"type":"text","text":"reach ` + token + `"},{"type":"text","text":"boom"}]}`,
+			wantBody: `{"type":"error","error":{"type":"shade_unresolved","message":"1 placeholders could not be restored: HOST"}}`,
+		},
+		{
+			name:     "nothing collected",
+			answer:   `{"content":[{"type":"text","text":"boom"}]}`,
+			wantBody: `{"type":"error","error":{"type":"shade_unresolved","message":"the answer could not be restored"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var diag bytes.Buffer
+			eng := &answerEngine{
+				unresolved:   []placeholder.Token{{Type: "HOST", Raw: token}},
+				restoreErr:   errors.New("store is unreadable"),
+				restoreErrOn: "boom",
+			}
+			rec := postMessages(answerUpstream(t, http.StatusOK, []byte(tc.answer), eng, &diag, ""))
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+			}
+			if got := rec.Body.String(); got != tc.wantBody {
+				t.Errorf("body = %q, want %q", got, tc.wantBody)
+			}
+			if got := rec.Body.String(); strings.Contains(got, value) || strings.Contains(got, token) {
+				t.Errorf("the refusal must carry neither the value nor a token: %q", got)
+			}
+			if got := diag.String(); !strings.Contains(got, "restore failed") {
+				t.Errorf("diag = %q, want the restore failure reported", got)
+			}
+		})
+	}
+}
+
+// TestRestoreFailureUnderFailOpenLogForwardsRaw pins the other side: a broken store must not
+// take the answer away, so fail_open_log hands the raw answer on and only reports the failure.
+func TestRestoreFailureUnderFailOpenLogForwardsRaw(t *testing.T) {
+	const value, token = "db.prod.local", "<HOST_1>"
+	answer := []byte(`{"content":[{"type":"text","text":"reach ` + token + `"},{"type":"text","text":"boom"}]}`)
+	var diag bytes.Buffer
+	eng := &answerEngine{
+		unresolved:   []placeholder.Token{{Type: "HOST", Raw: token}},
+		restoreErr:   errors.New("store is unreadable"),
+		restoreErrOn: "boom",
+	}
+	rec := postMessages(answerUpstream(t, http.StatusOK, answer, eng, &diag, "fail_policy = \"fail_open_log\"\n"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != string(answer) {
+		t.Errorf("body = %q, want the raw answer forwarded", got)
+	}
+	line := diag.String()
+	if !strings.Contains(line, "restore failed") {
+		t.Errorf("diag = %q, want the restore failure reported", line)
+	}
+	if strings.Contains(line, value) {
+		t.Errorf("diag = %q, must carry no value", line)
 	}
 }
 

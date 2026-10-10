@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -122,9 +123,10 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 //
 // A non-success status is sanitized: its body is anonymized rather than cut, so the wording
 // a client retries on survives while no value travels in it. A success is a JSON answer
-// whose values are restored; an answer that does not parse — an event stream, which the
-// later streaming task owns, or a gateway's own page — is handed on unmodified rather than
-// mangled or refused.
+// whose values are restored. An answer that is not JSON at all — an event stream, which the
+// later streaming task owns, or a gateway's own page — is handed on unmodified. A restore the
+// engine itself failed is not: the policy decides, so a broken store never silently hands the
+// client an answer that may still hold placeholders.
 func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -171,18 +173,37 @@ func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
 		writeShadeError(w, "upstream answer could not be read")
 		return
 	}
-	restored, unresolved, err := s.restoreAnthropic(ctx, eng, raw)
-	if err != nil {
-		writeUpstreamAnswer(w, resp, raw)
-		return
-	}
-	// The policy is read here rather than carried from upstreamRequest, which loads the
-	// same config: a config that cannot be read here could not have been read there either,
-	// so the request would have failed before an answer arrived. A second read only fails on
-	// a race with an edit on disk, and then an empty policy fails closed, which is safe.
+	// The policy is read before the restore, so an engine failure can be answered under it.
+	// It is read here rather than carried from upstreamRequest, which loads the same config:
+	// a config that cannot be read here could not have been read there either, so the request
+	// would have failed before an answer arrived. A second read only fails on a race with an
+	// edit on disk, and then an empty policy fails closed, which is safe.
 	var policy string
 	if cfg, err := config.Load(s.opts.Home, s.opts.Project); err == nil {
 		policy = cfg.FailPolicy
+	}
+	restored, unresolved, err := s.restoreAnthropic(ctx, eng, raw)
+	if errors.Is(err, errNotAJSONAnswer) {
+		// Not a JSON object — a stream, or a gateway's own page. It is not this arm's to
+		// rewrite, so it goes on as it arrived.
+		writeUpstreamAnswer(w, resp, raw)
+		return
+	}
+	if err != nil {
+		// The engine refused, not the parser. The answer may still hold placeholders, so the
+		// policy decides: fail_open_log hands it on as it arrived, fail_closed refuses with
+		// the types collected before the failure, or a generic line when there are none.
+		fmt.Fprintf(s.opts.Diag, "proxy: restore failed: %v\n", err)
+		if policy == config.FailOpenLog {
+			writeUpstreamAnswer(w, resp, raw)
+			return
+		}
+		blocked, reason := s.refuseUnresolved(ctx, eng, policy, unresolved)
+		if !blocked {
+			reason = errorBody("shade_unresolved", "the answer could not be restored")
+		}
+		writeErrorBody(w, reason)
+		return
 	}
 	if blocked, reason := s.refuseUnresolved(ctx, eng, policy, unresolved); blocked {
 		writeErrorBody(w, reason)

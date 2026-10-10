@@ -34,18 +34,22 @@ func statusLine(status int) []byte {
 // refuseUnresolved is the single place the fail policy is read, so the non-streaming
 // answer, the buffered stream and the OpenAI path cannot drift. A fail_closed refusal with
 // a non-empty list journals one blocked row per distinct type and returns the body of the
-// refusing answer; fail_open_log journals nothing, names the types on diag and lets the
-// answer through. An empty list is never a refusal, whatever the policy.
+// refusing answer; fail_open_log journals nothing, names the types and tokens on diag and
+// lets the answer through. An empty list is never a refusal, whatever the policy.
 func (s *Server) refuseUnresolved(ctx context.Context, e Engine, policy string, unresolved []placeholder.Token) (bool, []byte) {
 	if len(unresolved) == 0 {
 		return false, nil
 	}
 	types := unresolvedTypes(unresolved)
-	message := fmt.Sprintf("%d placeholders could not be restored: %s", len(unresolved), strings.Join(types, ", "))
 	if policy == config.FailOpenLog {
-		fmt.Fprintf(s.opts.Diag, "proxy: fail_open_log: %s\n", message)
+		// The tokens, not just the types: a token is the proxy's own representation, the
+		// exact string the audit journal holds, and what an operator greps. A value is never
+		// in it (spec §9).
+		fmt.Fprintf(s.opts.Diag, "proxy: fail_open_log: %d placeholders could not be restored: %s (tokens %s)\n",
+			len(unresolved), strings.Join(types, ", "), strings.Join(unresolvedRaw(unresolved), ", "))
 		return false, nil
 	}
+	message := fmt.Sprintf("%d placeholders could not be restored: %s", len(unresolved), strings.Join(types, ", "))
 	for _, typ := range types {
 		if err := e.RecordBlocked(ctx, typ); err != nil {
 			s.reportRecordErr(err)
@@ -54,9 +58,7 @@ func (s *Server) refuseUnresolved(ctx context.Context, e Engine, policy string, 
 	return true, errorBody("shade_unresolved", message)
 }
 
-// unresolvedTypes names the distinct types in the order they first appear. Types, never a
-// token and never a value: the refusal is read by a client and the diag line by a human, and
-// neither may carry client text (spec §11).
+// unresolvedTypes names the distinct types in the order they first appear.
 func unresolvedTypes(unresolved []placeholder.Token) []string {
 	seen := make(map[string]bool, len(unresolved))
 	types := make([]string, 0, len(unresolved))
@@ -68,6 +70,17 @@ func unresolvedTypes(unresolved []placeholder.Token) []string {
 		types = append(types, tok.Type)
 	}
 	return types
+}
+
+// unresolvedRaw names each token exactly as it was found. A token is safe to show — it is the
+// proxy's own representation and the string the audit journal holds — and it never carries a
+// value or a fragment of one.
+func unresolvedRaw(unresolved []placeholder.Token) []string {
+	raws := make([]string, len(unresolved))
+	for i, tok := range unresolved {
+		raws[i] = tok.Raw
+	}
+	return raws
 }
 
 // reportRecordErr shows a failed auxiliary write on the diagnostic writer. The write is not
