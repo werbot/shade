@@ -159,7 +159,7 @@ out of step.
 | Event | What shade does |
 | --- | --- |
 | `SessionStart` | Registers the project and hands the model the directive that explains the tokens |
-| `UserPromptSubmit` | With `prompt_gate = "on"`, blocks a prompt whose content looks sensitive and names the types; silent otherwise |
+| `UserPromptSubmit` | With `prompt_gate = "on"` — or `"auto"` when no live proxy covers the project — blocks a prompt whose content looks sensitive and names the types; silent otherwise |
 | `PreToolUse` | Puts the real values back into the tool arguments, so the tool runs for real |
 | `PostToolUse` | Replaces values in the tool output with placeholders, so the model reads tokens |
 | `MessageDisplay` | Shows the real values on your screen; the transcript and the model keep the tokens |
@@ -167,8 +167,9 @@ out of step.
 Two limits are worth knowing before you rely on it:
 
 - **The prompt you type is not anonymized.** A hook cannot rewrite the prompt, so
-  the gate can only block it — and only when you turn it on. A secret pasted
-  straight into the prompt reaches the model unless `prompt_gate = "on"` stops it.
+  the gate can only block it — and only when you turn it on, or run `auto` with no
+  live proxy covering the project. A secret pasted straight into the prompt reaches
+  the model unless the gate stops it.
   What is protected is what the tools bring back: files, command output, logs.
 - **Tool arguments are restored optimistically.** The model writes those arguments, so a
   token it mangled is still matched; the other direction — tool output, which the
@@ -385,7 +386,7 @@ written for a future version will not break today's binary.
 | --- | --- | --- |
 | `fail_policy` | `fail_closed` | `fail_closed` blocks an answer with unresolved placeholders (exit 3); `fail_open_log` lets it through with a warning |
 | `entities_ttl` | `90d` | Default age for `shade entities prune` |
-| `prompt_gate` | `off` | `on` makes the `UserPromptSubmit` hook block a prompt whose content looks sensitive, naming the types. `auto` means "unless a proxy is active" and is not live until the proxy exists, so `off` and `auto` behave the same today |
+| `prompt_gate` | `off` | `on` makes the `UserPromptSubmit` hook block a prompt whose content looks sensitive, naming the types. `auto` blocks the same way unless a live `shade serve` covers this project, so a prompt whose traffic goes around the proxy is stopped |
 | `stream_mode` | `incremental` | How `shade serve` relays a streamed answer. `incremental` restores and sends each text delta as it arrives; `buffered` collects a block's text and restores it whole at the block's stop, so an unresolved token can refuse the answer before it reaches the client. `buffered` is not the behaviour Claude Code expects — it is for non-interactive clients |
 | `upstream` | `https://api.anthropic.com` | The real endpoint `shade serve` forwards anonymized traffic to |
 | `api_key_env` | `ANTHROPIC_API_KEY` | The environment variable whose value `shade serve` substitutes for the client's key; an empty value forwards the client's own credentials untouched |
