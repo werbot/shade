@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
 	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/core"
 	"github.com/werbot/shade/internal/directive"
+	"github.com/werbot/shade/internal/jsonwalk"
 	"github.com/werbot/shade/internal/placeholder"
 	"github.com/werbot/shade/internal/rules"
 )
@@ -46,7 +48,22 @@ func (h Handler) userPromptSubmit(ctx context.Context, e Engine, ev Event) (Resp
 	if err != nil {
 		return Response{}, err
 	}
-	if !cfg.PromptGateEnabled() {
+	// The marker is consulted only in auto: off and on answer from the config alone, and a
+	// database round-trip on the hot path of every prompt is not free. A ProxyCovers failure
+	// is fail-open like any other runtime failure (see Handle).
+	//
+	// auto answers "does this traffic go through the proxy?" — so it asks about this
+	// session's environment too, not only about the store: a live proxy for the project
+	// whose base URL this session never exported leaves the prompt going straight to the
+	// provider, and that is the one case auto exists to catch (spec §10).
+	covered := false
+	if cfg.PromptGate == config.PromptGateAuto {
+		covered, err = e.ProxyCovers(ctx, os.Getenv("ANTHROPIC_BASE_URL"))
+		if err != nil {
+			return Response{}, err
+		}
+	}
+	if !cfg.PromptGateEnabled(covered) {
 		return Response{}, nil
 	}
 	// Scan, not Anonymize: the gate is a diagnostic, and a blocked prompt must not
@@ -183,7 +200,7 @@ func rewriteJSON(raw json.RawMessage, f func(string) (core.Result, error)) (rewr
 		return out, nil
 	}
 	var failed error
-	doc, changed, err := RewriteJSON(raw, func(s string) (string, bool) {
+	doc, changed, err := jsonwalk.RewriteJSON(raw, func(s string) (string, bool) {
 		if failed != nil {
 			return s, false
 		}

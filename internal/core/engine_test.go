@@ -2,8 +2,10 @@ package core_test
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/werbot/shade/internal/core"
 	"github.com/werbot/shade/internal/crypt"
@@ -234,5 +236,31 @@ func TestAnonymizeAllocatesEachPartOfSplitSpan(t *testing.T) {
 	}
 	if back.Text != src {
 		t.Fatalf("round trip broken:\n want %q\n got  %q", src, back.Text)
+	}
+}
+
+// The engine's ProxyCovers is glue over store.ProxyCovers: it answers for the engine's own
+// project, so a fresh marker for that root covers it — but only for a session pointed at the
+// address that marker serves on.
+func TestEngineProxyCoversFollowsTheStoreMarker(t *testing.T) {
+	e := newEngine(t)
+	ok, err := e.ProxyCovers(ctx, "http://127.0.0.1:8787")
+	if err != nil || ok {
+		t.Fatalf("no marker must not cover the project: ok=%v err=%v", ok, err)
+	}
+	if err := e.Store().SetProxyMarker(ctx, store.ProxyMarker{
+		PID: os.Getpid(), Port: 8787, RootPath: e.RootPath(), TS: time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = e.ProxyCovers(ctx, "http://127.0.0.1:8787")
+	if err != nil || !ok {
+		t.Fatalf("a fresh marker for the engine's root must cover it: ok=%v err=%v", ok, err)
+	}
+	// The engine must not answer for a session that talks somewhere else, or the gate would
+	// stand down for traffic that never passed through the proxy.
+	ok, err = e.ProxyCovers(ctx, "")
+	if err != nil || ok {
+		t.Fatalf("a session pointed elsewhere must not be covered: ok=%v err=%v", ok, err)
 	}
 }

@@ -1,4 +1,6 @@
-package hook
+// Package jsonwalk rewrites the strings inside a JSON document without touching its
+// shape: an object stays an object, a number stays a number.
+package jsonwalk
 
 import (
 	"bytes"
@@ -13,7 +15,7 @@ import (
 type Rewriter func(s string) (string, bool)
 
 // RewriteJSON walks every string in a JSON document and applies f to it, leaving
-// object keys, numbers, booleans and null untouched: a type the hook never meant to
+// object keys, numbers, booleans and null untouched: a type the caller never meant to
 // rewrite must not be re-encoded. It reports whether anything changed; an unchanged
 // document is returned byte-for-byte, so a caller that prints only on change never
 // perturbs the tool's data. When something did change the document is re-marshalled
@@ -34,7 +36,7 @@ func RewriteJSON(raw json.RawMessage, f Rewriter) (out json.RawMessage, changed 
 		return nil, false, errors.New("rewrite json: trailing data after the json document")
 	}
 
-	v, changed = rewriteValue(v, f)
+	v, changed = RewriteValue(v, f)
 	if !changed {
 		return raw, false, nil
 	}
@@ -48,9 +50,9 @@ func RewriteJSON(raw json.RawMessage, f Rewriter) (out json.RawMessage, changed 
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), true, nil
 }
 
-// rewriteValue applies f to the strings inside v and reports whether any of them
+// RewriteValue applies f to the strings inside v and reports whether any of them
 // changed. Numbers, booleans and null fall through untouched.
-func rewriteValue(v any, f Rewriter) (any, bool) {
+func RewriteValue(v any, f Rewriter) (any, bool) {
 	switch x := v.(type) {
 	case string:
 		return f(x)
@@ -58,7 +60,7 @@ func rewriteValue(v any, f Rewriter) (any, bool) {
 		changed := false
 		for i, e := range x {
 			var c bool
-			x[i], c = rewriteValue(e, f)
+			x[i], c = RewriteValue(e, f)
 			changed = changed || c
 		}
 		return x, changed
@@ -66,7 +68,7 @@ func rewriteValue(v any, f Rewriter) (any, bool) {
 		changed := false
 		for k, e := range x {
 			var c bool
-			x[k], c = rewriteValue(e, f)
+			x[k], c = RewriteValue(e, f)
 			changed = changed || c
 		}
 		return x, changed

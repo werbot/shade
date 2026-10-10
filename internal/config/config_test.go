@@ -77,11 +77,11 @@ func TestLoadBrokenFileFails(t *testing.T) {
 	}
 }
 
-// TestUnknownKeysAreIgnored — the keys of future phases (stream_mode and others) in the file
-// are allowed: we do not keep a field without a consumer, but we must not fail on it.
+// TestUnknownKeysAreIgnored — a key of a future phase ([categories]) in the file is
+// allowed: we do not keep a field without a consumer, but we must not fail on it.
 func TestUnknownKeysAreIgnored(t *testing.T) {
 	root := t.TempDir()
-	write(t, filepath.Join(root, ".shade.toml"), "stream_mode = true\nupstream = \"http://x\"\n")
+	write(t, filepath.Join(root, ".shade.toml"), "[categories]\nemail = true\n")
 
 	c, err := config.Load(t.TempDir(), root)
 	if err != nil {
@@ -126,16 +126,16 @@ func TestEmptyDirsSkipLayerInsteadOfReadingCwd(t *testing.T) {
 // visible instead of quietly disabling the gate.
 func TestPromptGateDefaultIsOffAndUnknownValueFails(t *testing.T) {
 	c, err := config.Load("", "")
-	if err != nil || c.PromptGate != "off" || c.PromptGateEnabled() {
-		t.Fatalf("default: %+v, enabled=%v, err=%v", c, c.PromptGateEnabled(), err)
+	if err != nil || c.PromptGate != "off" || c.PromptGateEnabled(true) {
+		t.Fatalf("default: %+v, enabled=%v, err=%v", c, c.PromptGateEnabled(true), err)
 	}
 	home := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("prompt_gate = \"on\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	c, err = config.Load(home, "")
-	if err != nil || !c.PromptGateEnabled() {
-		t.Fatalf("on: enabled=%v, err=%v", c.PromptGateEnabled(), err)
+	if err != nil || !c.PromptGateEnabled(true) {
+		t.Fatalf("on: enabled=%v, err=%v", c.PromptGateEnabled(true), err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("prompt_gate = \"touch\"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -152,8 +152,8 @@ func TestPromptGateDefaultIsOffAndUnknownValueFails(t *testing.T) {
 }
 
 // TestPromptGateAutoIsOffUntilPhase4 — spec §10: auto means "block unless a proxy is
-// active", a meaning that only exists once shade serve lands in phase 4. Until then
-// auto must behave as off, and that contract is worth pinning.
+// active". Until shade serve can report whether it covers the traffic, the caller passes
+// a covering proxy, so auto must stay off — the pre-proxy behaviour, worth pinning.
 func TestPromptGateAutoIsOffUntilPhase4(t *testing.T) {
 	home := t.TempDir()
 	write(t, filepath.Join(home, "config.toml"), "prompt_gate = \"auto\"\n")
@@ -162,8 +162,8 @@ func TestPromptGateAutoIsOffUntilPhase4(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.PromptGate != "auto" || c.PromptGateEnabled() {
-		t.Fatalf("auto: gate=%q, enabled=%v", c.PromptGate, c.PromptGateEnabled())
+	if c.PromptGate != "auto" || c.PromptGateEnabled(true) {
+		t.Fatalf("auto: gate=%q, enabled=%v", c.PromptGate, c.PromptGateEnabled(true))
 	}
 }
 
@@ -177,6 +177,101 @@ func TestPromptGateTypoInGlobalFailsDespiteProjectOverride(t *testing.T) {
 
 	if _, err := config.Load(home, root); err == nil {
 		t.Fatal("a typo in the global file must fail even when the project overrides it")
+	}
+}
+
+// TestDefaultStreamModeIsIncremental — the buffered mode is the fallback for a client
+// that cannot handle a stream, so the default must be the streaming one.
+func TestDefaultStreamModeIsIncremental(t *testing.T) {
+	if c := config.Default(); c.StreamMode != config.StreamIncremental {
+		t.Fatalf("got %q", c.StreamMode)
+	}
+}
+
+// TestUpstreamAndAPIKeyEnvHaveDefaults — the values are the contract later tasks pass to
+// the proxy, so they are pinned as literals, not as the constants they were built from.
+func TestUpstreamAndAPIKeyEnvHaveDefaults(t *testing.T) {
+	c := config.Default()
+	if c.Upstream != "https://api.anthropic.com" {
+		t.Fatalf("upstream: %q", c.Upstream)
+	}
+	if c.APIKeyEnv != "ANTHROPIC_API_KEY" {
+		t.Fatalf("api_key_env: %q", c.APIKeyEnv)
+	}
+}
+
+// TestUnknownStreamModeIsRejected — a misspelled mode is an error, not a silent default:
+// the forwarding behaviour of the proxy depends on it.
+func TestUnknownStreamModeIsRejected(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, ".shade.toml"), "stream_mode = \"chunky\"\n")
+
+	if _, err := config.Load(t.TempDir(), root); err == nil {
+		t.Fatal("an unknown stream_mode must be an error, not a silent default")
+	}
+}
+
+// TestUpstreamWithoutSchemeIsRejected — a bare host is not a usable target: without a
+// scheme the forwarder cannot pick a transport, so the value fails loud at load.
+func TestUpstreamWithoutSchemeIsRejected(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, ".shade.toml"), "upstream = \"api.anthropic.com\"\n")
+
+	if _, err := config.Load(t.TempDir(), root); err == nil {
+		t.Fatal("an upstream without a scheme and host must be an error")
+	}
+}
+
+// TestPromptGateAutoBlocksWithoutProxy — auto is the opposite of the proxy: with nothing
+// wrapping the traffic, the block is the only thing keeping the original out of the model.
+func TestPromptGateAutoBlocksWithoutProxy(t *testing.T) {
+	cases := []struct {
+		mode    string
+		covered bool
+	}{
+		{config.PromptGateAuto, false},
+	}
+	for _, tc := range cases {
+		if !(config.Config{PromptGate: tc.mode}).PromptGateEnabled(tc.covered) {
+			t.Fatalf("%s with covered=%v must block", tc.mode, tc.covered)
+		}
+	}
+}
+
+// TestPromptGateAutoStaysQuietWithProxy — with the proxy anonymizing the traffic, auto
+// has nothing to add and must not block the prompt.
+func TestPromptGateAutoStaysQuietWithProxy(t *testing.T) {
+	cases := []struct {
+		mode    string
+		covered bool
+	}{
+		{config.PromptGateAuto, true},
+	}
+	for _, tc := range cases {
+		if (config.Config{PromptGate: tc.mode}).PromptGateEnabled(tc.covered) {
+			t.Fatalf("%s with covered=%v must stay quiet", tc.mode, tc.covered)
+		}
+	}
+}
+
+// TestPromptGateOnAndOffIgnoreTheProxy — the explicit modes are the user's decision and
+// never consult the proxy.
+func TestPromptGateOnAndOffIgnoreTheProxy(t *testing.T) {
+	cases := []struct {
+		mode    string
+		covered bool
+		want    bool
+	}{
+		{config.PromptGateOn, false, true},
+		{config.PromptGateOn, true, true},
+		{config.PromptGateOff, false, false},
+		{config.PromptGateOff, true, false},
+	}
+	for _, tc := range cases {
+		got := (config.Config{PromptGate: tc.mode}).PromptGateEnabled(tc.covered)
+		if got != tc.want {
+			t.Fatalf("%s with covered=%v: got %v, want %v", tc.mode, tc.covered, got, tc.want)
+		}
 	}
 }
 

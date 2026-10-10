@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,21 +23,50 @@ import (
 // the other on a rename and fail in the unsafe direction.
 const FailOpenLog = "fail_open_log"
 
+// The values of the proxy keys, and their defaults. StreamMode selects how shade serve
+// relays the upstream answer — incremental streams it, buffered waits for the whole body,
+// which is the fallback for a client that cannot handle a stream. Upstream is the real
+// endpoint the proxy forwards to. APIKeyEnv names the environment variable holding the
+// key the proxy substitutes for the client's; an empty value is legal and means "forward
+// the client's own credentials untouched".
+const (
+	StreamIncremental = "incremental"
+	StreamBuffered    = "buffered"
+
+	PromptGateOff  = "off"
+	PromptGateOn   = "on"
+	PromptGateAuto = "auto"
+
+	DefaultUpstream   = "https://api.anthropic.com"
+	DefaultAPIKeyEnv  = "ANTHROPIC_API_KEY"
+	DefaultStreamMode = StreamIncremental
+)
+
 // Config — the settings read so far. There are exactly as many fields as there are
 // consumers: FailPolicy is read by the CLI (fail_open_log turns exit code 3 into
-// a warning), EntitiesTTL — entities prune, PromptGate — the UserPromptSubmit gate.
-// The remaining keys of the spec (stream_mode, upstream, api_key_env, [categories])
-// will arrive together with their consumers; toml.Unmarshal ignores unknown keys, so
-// a file with them right now will not break.
+// a warning), EntitiesTTL — entities prune, PromptGate — the UserPromptSubmit gate,
+// StreamMode, Upstream and APIKeyEnv — shade serve. The remaining key of the spec
+// ([categories]) will arrive together with its consumer; toml.Unmarshal ignores unknown
+// keys, so a file with it right now will not break.
 type Config struct {
 	FailPolicy  string `toml:"fail_policy"`
 	EntitiesTTL string `toml:"entities_ttl"`
 	PromptGate  string `toml:"prompt_gate"`
+	StreamMode  string `toml:"stream_mode"`
+	Upstream    string `toml:"upstream"`
+	APIKeyEnv   string `toml:"api_key_env"`
 }
 
 // Default returns the values in effect when no file has set a field.
 func Default() Config {
-	return Config{FailPolicy: "fail_closed", EntitiesTTL: "90d", PromptGate: "off"}
+	return Config{
+		FailPolicy:  "fail_closed",
+		EntitiesTTL: "90d",
+		PromptGate:  PromptGateOff,
+		StreamMode:  DefaultStreamMode,
+		Upstream:    DefaultUpstream,
+		APIKeyEnv:   DefaultAPIKeyEnv,
+	}
 }
 
 // Load assembles the config from three layers: defaults, the global file home/config.toml,
@@ -67,19 +97,40 @@ func Load(home, projectRoot string) (Config, error) {
 		// came from still known. A typo in the global file stays an error even when the
 		// project file overrides it — the typo is real, and a gate that guards a leak fails loud.
 		switch c.PromptGate {
-		case "off", "on", "auto":
+		case PromptGateOff, PromptGateOn, PromptGateAuto:
 		default:
-			return Config{}, fmt.Errorf("config %s: prompt_gate: %q is not off, on or auto", path, c.PromptGate)
+			return Config{}, fmt.Errorf("config %s: prompt_gate: %q is not %s, %s or %s", path, c.PromptGate, PromptGateOff, PromptGateOn, PromptGateAuto)
+		}
+		// A misspelled stream_mode is an error rather than a silent fallback: the mode
+		// decides whether shade serve buffers the answer, and a wrong guess changes behaviour.
+		switch c.StreamMode {
+		case StreamIncremental, StreamBuffered:
+		default:
+			return Config{}, fmt.Errorf("config %s: stream_mode: %q is not %s or %s", path, c.StreamMode, StreamIncremental, StreamBuffered)
+		}
+		// The target must carry a scheme and a host: without a scheme the forwarder cannot
+		// pick a transport, and a bare host would be read as a relative path, not an endpoint.
+		if u, err := url.Parse(c.Upstream); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return Config{}, fmt.Errorf("config %s: upstream: %q must be an absolute http(s) url with a host", path, c.Upstream)
 		}
 	}
 	return c, nil
 }
 
-// PromptGateEnabled reports whether the UserPromptSubmit gate must block a prompt
-// with sensitive content. "auto" means "unless a proxy is active": the check for an
-// active proxy appears in phase 4 together with shade serve, so until then auto is
-// off, and the default is off for the same reason.
-func (c Config) PromptGateEnabled() bool { return c.PromptGate == "on" }
+// PromptGateEnabled reports whether the UserPromptSubmit gate must block a prompt with
+// sensitive content. "auto" means "unless a proxy is active": proxyCovers is the caller's
+// answer to "does shade serve wrap this traffic?" — with the original anonymized on the
+// way out, auto has nothing left to block. The explicit on and off ignore the proxy.
+func (c Config) PromptGateEnabled(proxyCovers bool) bool {
+	switch c.PromptGate {
+	case PromptGateOn:
+		return true
+	case PromptGateAuto:
+		return !proxyCovers
+	default:
+		return false
+	}
+}
 
 // mergeFile parses one layer into c. The path in the error is mandatory: there are two configs, and
 // without it the user will not understand which one to fix.

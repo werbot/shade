@@ -17,6 +17,7 @@ type Engine interface {
 	Scan(text, only string) (string, []rules.Span, error)
 	RootPath() string
 	RecordBlocked(ctx context.Context, typ string) error
+	ProxyCovers(ctx context.Context, upstreamURL string) (bool, error)
 	Close() error
 }
 
