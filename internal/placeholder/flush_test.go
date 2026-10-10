@@ -7,6 +7,11 @@ import (
 	"github.com/werbot/shade/internal/placeholder"
 )
 
+// maxTail mirrors flush.go's cap. It is a literal, not a reference, so the boundary test
+// below pins the exact value the spec fixes (64) rather than following the constant it
+// verifies.
+const maxTail = 64
+
 // TestFlusherEmitsEverythingBeforeTheLastAngle: text that cannot start a placeholder is
 // handed on at once; only the tail from the last "<" stays buffered.
 func TestFlusherEmitsEverythingBeforeTheLastAngle(t *testing.T) {
@@ -30,7 +35,8 @@ func TestFlusherHoldsAnUnfinishedPlaceholder(t *testing.T) {
 
 // TestPlaceholderSplitAtEveryPositionIsRestored: whatever the stream boundary, the pieces
 // plus the flush rebuild the text byte for byte. The text carries multibyte runes and an
-// emoji, so a cut can land inside a rune and the buffer must still not reorder or drop bytes.
+// emoji, so a cut can land inside a rune and the buffer must still not reorder or drop
+// bytes. Every cut is covered, not two hand-picked ones.
 func TestPlaceholderSplitAtEveryPositionIsRestored(t *testing.T) {
 	const text = "привет 👋 <EMAIL_1> мир"
 	for cut := 0; cut <= len(text); cut++ {
@@ -43,13 +49,29 @@ func TestPlaceholderSplitAtEveryPositionIsRestored(t *testing.T) {
 	}
 }
 
-// TestFlusherGivesUpOnATailThatIsTooLong: a tail past the cap cannot be a token, so it is
-// emitted as is instead of being held forever.
+// TestFlusherGivesUpOnATailThatIsTooLong: an unclosed "<" past the cap cannot be a token, so
+// Write stops waiting for ">" and emits it as is. Both sides of the boundary are pinned, so
+// an off-by-one in the cap arm cannot pass unnoticed.
 func TestFlusherGivesUpOnATailThatIsTooLong(t *testing.T) {
-	f := placeholder.NewFlusher()
-	tail := "<" + strings.Repeat("E", 100)
-	if got := f.Write(tail); got != tail {
-		t.Fatalf("Write = %q, want the whole long tail", got)
+	cases := []struct {
+		name    string
+		tailLen int
+		emitted bool
+	}{
+		{"at the cap", maxTail, false},
+		{"past the cap", maxTail + 1, true},
+	}
+	for _, c := range cases {
+		tail := "<" + strings.Repeat("E", c.tailLen-1)
+		f := placeholder.NewFlusher()
+		got := f.Write(tail)
+		want := ""
+		if c.emitted {
+			want = tail
+		}
+		if got != want {
+			t.Fatalf("%s (tail %d bytes): Write = %q, want %q", c.name, c.tailLen, got, want)
+		}
 	}
 }
 
@@ -66,16 +88,21 @@ func TestFlushWithholdsAPlaceholderPrefix(t *testing.T) {
 	}
 }
 
-// TestFlushEmitsATailThatIsNotAPlaceholderPrefix: the tail broke off before it could be a
-// placeholder — after "/" no type can follow — so it is ordinary text, not a withheld prefix.
-func TestFlushEmitsATailThatIsNotAPlaceholderPrefix(t *testing.T) {
-	f := placeholder.NewFlusher()
-	if got := f.Write("bold</b>"); got != "bold" {
-		t.Fatalf("Write = %q, want %q", got, "bold")
-	}
-	out, withheld := f.Flush()
-	if out != "</b>" || withheld != 0 {
-		t.Fatalf("Flush = %q, %d; want %q, 0", out, withheld, "</b>")
+// TestFlushWithholdsATailWhateverItsShape: the spec never flushes an unclosed "<" — the
+// tail from it waits for ">" or for the length cap. So a non-empty buffer is withheld
+// whatever it looks like, including one that could never become a placeholder ("</b",
+// "<EM", a bare "<"). This is the spec's rule, not an accident; a tail that did carry a
+// closing ">" never reaches Flush, because Write hands it on the moment it closes.
+func TestFlushWithholdsATailWhateverItsShape(t *testing.T) {
+	for _, tail := range []string{"</b", "<EM", "<"} {
+		f := placeholder.NewFlusher()
+		if got := f.Write("bold" + tail); got != "bold" {
+			t.Fatalf("tail %q: Write = %q, want %q", tail, got, "bold")
+		}
+		out, withheld := f.Flush()
+		if out != "" || withheld != len(tail) {
+			t.Fatalf("tail %q: Flush = %q, %d; want %q, %d", tail, out, withheld, "", len(tail))
+		}
 	}
 }
 
