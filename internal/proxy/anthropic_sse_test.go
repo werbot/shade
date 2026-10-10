@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -533,13 +534,15 @@ func TestSSETwoStreamsDoNotShareState(t *testing.T) {
 }
 
 // TestSSESanitizesTheErrorMessage pins the error event: the provider's message keeps its
-// wording — a client retries on it — while a value inside becomes a token. Forward the event
-// untouched and the value leaks.
+// wording — a client retries on it — while a value inside becomes a token, and the event ends
+// the stream. Forward the event untouched and the value leaks; read past it to EOF and a
+// spurious early-end line appears.
 func TestSSESanitizesTheErrorMessage(t *testing.T) {
 	const value = "db.prod.local"
-	src := sseEvent("error", `{"type":"error","error":{"type":"overloaded_error","message":"could not reach `+value+`"}}`) +
-		sseEvent("message_stop", `{"type":"message_stop"}`)
-	s := walkerServer(t, nil)
+	var diag bytes.Buffer
+	s := walkerServer(t, &diag)
+	// A real Anthropic stream ends after an error event without a message_stop.
+	src := sseEvent("error", `{"type":"error","error":{"type":"overloaded_error","message":"could not reach `+value+`"}}`)
 	out, err := runPipe(t, s, &answerEngine{replace: [][2]string{{value, "<HOST_1>"}}}, src)
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
@@ -549,6 +552,12 @@ func TestSSESanitizesTheErrorMessage(t *testing.T) {
 	}
 	if !strings.Contains(out, "could not reach") || !strings.Contains(out, "<HOST_1>") {
 		t.Errorf("the wording must survive with the value tokenized: %q", out)
+	}
+	if strings.Contains(out, "message_stop") {
+		t.Errorf("no message_stop may follow a terminal error event: %q", out)
+	}
+	if line := diag.String(); strings.Contains(line, "stream ended early") {
+		t.Errorf("diag = %q, want no spurious early end after a terminal error event", line)
 	}
 }
 
@@ -654,5 +663,84 @@ func TestSSESendsNoToolDeltaForAnEmptyInput(t *testing.T) {
 	}
 	if line := diag.String(); strings.Contains(line, "could not be restored") {
 		t.Errorf("diag = %q, want no spurious restore failure", line)
+	}
+}
+
+// TestSSEHoldsAFullyHeldDeltaWithoutAnEmptyFrame pins the empty-result branch: a text_delta
+// whose text is held in full (it starts with "<") emits no frame at all — an empty text_delta
+// would only be noise. Remove the guard and a stray empty delta appears.
+func TestSSEHoldsAFullyHeldDeltaWithoutAnEmptyFrame(t *testing.T) {
+	const value = "db.prod.local"
+	src := textDeltaFrame(t, 0, "<HOST") +
+		textDeltaFrame(t, 0, "_1>x") +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+	s := walkerServer(t, nil)
+	out, err := runPipe(t, s, &answerEngine{replace: [][2]string{{"<HOST_1>", value}}}, src)
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	deltas := 0
+	for _, frame := range outputFrames(out) {
+		if frame.event != "content_block_delta" {
+			continue
+		}
+		data, _ := parseFrameData(frame)
+		delta, _ := data["delta"].(map[string]any)
+		if typ, _ := delta["type"].(string); typ != "text_delta" {
+			continue
+		}
+		deltas++
+		if text, _ := delta["text"].(string); text == "" {
+			t.Errorf("an empty text_delta frame was emitted: %s", frame.data)
+		}
+	}
+	if deltas != 1 {
+		t.Errorf("text_delta frames = %d, want 1 (the fully held delta must emit nothing)", deltas)
+	}
+	if got := collectedText(out); got != value+"x" {
+		t.Errorf("text = %q, want %q", got, value+"x")
+	}
+}
+
+// TestSSEForwardsTextWhenTheEngineRestoreFails pins the text path's refusal arm: a hard
+// Restore error cannot fail closed in incremental mode (spec §7), so the text goes on as it
+// came and the failure is reported on diag. Return the error instead and the stream breaks;
+// drop the diag line and the loss is silent.
+func TestSSEForwardsTextWhenTheEngineRestoreFails(t *testing.T) {
+	var diag bytes.Buffer
+	s := walkerServer(t, &diag)
+	src := textDeltaFrame(t, 0, "boom") + sseEvent("message_stop", `{"type":"message_stop"}`)
+	out, err := runPipe(t, s, &answerEngine{restoreErr: errors.New("store is unreadable"), restoreErrOn: "boom"}, src)
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if got := collectedText(out); got != "boom" {
+		t.Errorf("text = %q, want it forwarded as it came", got)
+	}
+	if line := diag.String(); !strings.Contains(line, "restore failed") {
+		t.Errorf("diag = %q, want the restore failure reported", line)
+	}
+}
+
+// TestSSEToolArgumentsPassThroughWhenTheEngineRestoreFails pins the tool path's refusal arm:
+// when restoring a string inside the buffered arguments fails, the arguments still go out as
+// they came and the failure is reported. Drop the diag line and the loss is silent.
+func TestSSEToolArgumentsPassThroughWhenTheEngineRestoreFails(t *testing.T) {
+	var diag bytes.Buffer
+	s := walkerServer(t, &diag)
+	src := sseEvent("content_block_start", `{"type":"content_block_start","index":5,"content_block":{"type":"tool_use","id":"tu_5","name":"Bash","input":{}}}`) +
+		inputJSONDeltaFrame(t, 5, `{"cmd":"boom"}`) +
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":5}`) +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+	out, err := runPipe(t, s, &answerEngine{restoreErr: errors.New("store is unreadable"), restoreErrOn: "boom"}, src)
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	args := decodeJSON(t, []byte(toolArguments(t, findInputJSONDelta(t, out))))
+	if got := args["cmd"]; got != "boom" {
+		t.Errorf("tool command = %v, want it forwarded as it came", got)
+	}
+	if line := diag.String(); !strings.Contains(line, "restore failed") {
+		t.Errorf("diag = %q, want the restore failure reported", line)
 	}
 }

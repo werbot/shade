@@ -48,7 +48,10 @@ func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, src io.Reader, 
 		if err := s.handleSSEFrame(ctx, e, fl, tools, frame, dst); err != nil {
 			return err
 		}
-		if frame.event == "message_stop" {
+		// message_stop and error both end the stream. An error event is terminal in the
+		// protocol: the read loop stops here rather than reading to EOF and reporting an early
+		// end that never happened, and no message_stop is emitted after it.
+		if frame.event == "message_stop" || frame.event == "error" {
 			return nil
 		}
 	}
