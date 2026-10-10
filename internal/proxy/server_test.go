@@ -205,12 +205,35 @@ func TestHopByHopHeadersAreNotForwarded(t *testing.T) {
 	in.Header.Set("Connection", "keep-alive")
 	in.Header.Set("Transfer-Encoding", "chunked")
 	in.Header.Set("X-Kept", "yes")
-	got := forward(t, s, up, in, []byte(`{}`))
+
+	// Transfer-Encoding is invisible on the wire: the transport never writes it from the
+	// Header map, so a request with a known-length body drops it whether or not the code
+	// does anything. Assert on the request the code builds — present on the way in, gone
+	// on the way out — so the check fails if the Del is removed.
+	if in.Header.Get("Transfer-Encoding") != "chunked" {
+		t.Fatalf("incoming Transfer-Encoding = %q, want it set, so the check means something", in.Header.Get("Transfer-Encoding"))
+	}
+	req, err := s.upstreamRequest(t.Context(), in, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("upstreamRequest: %v", err)
+	}
+	if got := req.Header.Get("Transfer-Encoding"); got != "" {
+		t.Errorf("built request Transfer-Encoding = %q, want it dropped", got)
+	}
+
+	// Connection is an ordinary header and does travel, so it is checked where a client
+	// would see it: on the wire.
+	resp, err := s.client.Do(req)
+	if err != nil {
+		t.Fatalf("do upstream: %v", err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("drain upstream response: %v", err)
+	}
+	got := up.snapshot()
 	if got.header.Get("Connection") != "" {
 		t.Errorf("upstream Connection = %q, want it dropped", got.header.Get("Connection"))
-	}
-	if got.header.Get("Transfer-Encoding") != "" {
-		t.Errorf("upstream Transfer-Encoding = %q, want it dropped", got.header.Get("Transfer-Encoding"))
 	}
 	// A normal header still arrives: the walk drops the hop-by-hop set, not everything.
 	if got.header.Get("X-Kept") != "yes" {
