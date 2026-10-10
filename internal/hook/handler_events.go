@@ -46,7 +46,10 @@ func (h Handler) userPromptSubmit(ctx context.Context, e Engine, ev Event) (Resp
 	if err != nil {
 		return Response{}, err
 	}
-	if !cfg.PromptGateEnabled() {
+	// True until shade serve can report whether it wraps this traffic: auto must stay off
+	// (today's behaviour) rather than block every session before the proxy check exists.
+	// The serve task replaces this with the real answer.
+	if !cfg.PromptGateEnabled(true) {
 		return Response{}, nil
 	}
 	// Scan, not Anonymize: the gate is a diagnostic, and a blocked prompt must not
