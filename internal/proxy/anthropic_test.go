@@ -547,3 +547,104 @@ func TestUnparseableBodyIsRefusedWithoutUpstream(t *testing.T) {
 		})
 	}
 }
+
+// messageContent returns messages[i].content as an array of blocks.
+func messageContent(t *testing.T, doc map[string]any, i int) []any {
+	t.Helper()
+	msgs, ok := doc["messages"].([]any)
+	if !ok || i >= len(msgs) {
+		t.Fatalf("messages[%d] missing", i)
+	}
+	msg, ok := msgs[i].(map[string]any)
+	if !ok {
+		t.Fatalf("messages[%d] is %T", i, msgs[i])
+	}
+	blocks, ok := msg["content"].([]any)
+	if !ok {
+		t.Fatalf("messages[%d].content is %T, want an array", i, msg["content"])
+	}
+	return blocks
+}
+
+func TestAnonymizeAnthropicRewritesToolResultContent(t *testing.T) {
+	s := walkerServer(t, nil)
+	eng := &probeEngine{pairs: [][2]string{
+		{"ssh root@10.0.0.1", "<HOST_1>"},
+		{"secret-token", "<USER_1>"},
+	}}
+	body := []byte(`{"messages": [{"role": "user", "content": [
+		{"type": "tool_result", "tool_use_id": "tu_1", "content": "ssh root@10.0.0.1"},
+		{"type": "tool_result", "tool_use_id": "tu_2", "content": [{"type": "text", "text": "token is secret-token"}]}
+	]}]}`)
+
+	out, err := s.anonymizeAnthropic(t.Context(), eng, body)
+	if err != nil {
+		t.Fatalf("anonymizeAnthropic: %v", err)
+	}
+	blocks := messageContent(t, decodeJSON(t, out), 0)
+
+	// content as a plain string.
+	if got := blocks[0].(map[string]any)["content"]; got != "<HOST_1>" {
+		t.Errorf("string tool_result.content = %v, want %q", got, "<HOST_1>")
+	}
+	// content as an array of text blocks.
+	inner, ok := blocks[1].(map[string]any)["content"].([]any)
+	if !ok || len(inner) != 1 {
+		t.Fatalf("array tool_result.content = %#v, want one block", blocks[1].(map[string]any)["content"])
+	}
+	if got := inner[0].(map[string]any)["text"]; got != "token is <USER_1>" {
+		t.Errorf("text block = %v, want %q", got, "token is <USER_1>")
+	}
+	if !eng.saw("ssh root@10.0.0.1") || !eng.saw("secret-token") {
+		t.Error("the walker never routed a tool_result text through the engine")
+	}
+}
+
+func TestAnonymizeAnthropicRewritesToolDescriptions(t *testing.T) {
+	s := walkerServer(t, nil)
+	eng := &probeEngine{pairs: [][2]string{{"ssh root@10.0.0.1", "<HOST_1>"}}}
+	body := []byte(`{"messages": [{"role": "user", "content": "hi"}], "tools": [
+		{"name": "Bash", "description": "run ssh root@10.0.0.1 on the host", "input_schema": {"type": "object"}}
+	]}`)
+
+	out, err := s.anonymizeAnthropic(t.Context(), eng, body)
+	if err != nil {
+		t.Fatalf("anonymizeAnthropic: %v", err)
+	}
+	doc := decodeJSON(t, out)
+	tools, ok := doc["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one tool", doc["tools"])
+	}
+	tool := tools[0].(map[string]any)
+	if got := tool["description"]; got != "run <HOST_1> on the host" {
+		t.Errorf("description = %v, want %q", got, "run <HOST_1> on the host")
+	}
+	if tool["name"] != "Bash" {
+		t.Errorf("name = %v, want it untouched", tool["name"])
+	}
+	if !eng.saw("ssh root@10.0.0.1") {
+		t.Error("the walker never routed a tool description through the engine")
+	}
+}
+
+func TestAnonymizeAnthropicAnonymizesStringSystem(t *testing.T) {
+	s := walkerServer(t, nil)
+	eng := &probeEngine{pairs: [][2]string{{"ssh root@10.0.0.1", "<HOST_1>"}}}
+	body := []byte(`{"system": "run ssh root@10.0.0.1 now", "messages": [{"role": "user", "content": "hi"}]}`)
+
+	out, err := s.anonymizeAnthropic(t.Context(), eng, body)
+	if err != nil {
+		t.Fatalf("anonymizeAnthropic: %v", err)
+	}
+	blocks, ok := decodeJSON(t, out)["system"].([]any)
+	if !ok || len(blocks) != 2 {
+		t.Fatalf("system = %#v, want the wrapped string plus the directive", decodeJSON(t, out)["system"])
+	}
+	if got := blocks[0].(map[string]any)["text"]; got != "run <HOST_1> now" {
+		t.Errorf("wrapped system text = %v, want %q", got, "run <HOST_1> now")
+	}
+	if !eng.saw("ssh root@10.0.0.1") {
+		t.Error("the walker never routed a string system through the engine")
+	}
+}
