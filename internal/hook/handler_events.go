@@ -47,10 +47,17 @@ func (h Handler) userPromptSubmit(ctx context.Context, e Engine, ev Event) (Resp
 	if err != nil {
 		return Response{}, err
 	}
-	// True until shade serve can report whether it wraps this traffic: auto must stay off
-	// (today's behaviour) rather than block every session before the proxy check exists.
-	// The serve task replaces this with the real answer.
-	if !cfg.PromptGateEnabled(true) {
+	// The marker is consulted only in auto: off and on answer from the config alone, and a
+	// database round-trip on the hot path of every prompt is not free. A ProxyCovers failure
+	// is fail-open like any other runtime failure (see Handle).
+	covered := false
+	if cfg.PromptGate == config.PromptGateAuto {
+		covered, err = e.ProxyCovers(ctx)
+		if err != nil {
+			return Response{}, err
+		}
+	}
+	if !cfg.PromptGateEnabled(covered) {
 		return Response{}, nil
 	}
 	// Scan, not Anonymize: the gate is a diagnostic, and a blocked prompt must not

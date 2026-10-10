@@ -89,14 +89,22 @@ func writeConfig(t *testing.T, dir, name, body string) {
 // the gate, SessionStart and PostToolUse tests run through the real engine, because
 // those responses are produced by core, not by the event walker.
 type fakeEngine struct {
-	root       string
-	restoreFn  func(string) (core.Result, error)
-	restoreErr error
-	closed     bool
+	root        string
+	restoreFn   func(string) (core.Result, error)
+	restoreErr  error
+	closed      bool
+	proxyCovers func(context.Context) (bool, error)
 }
 
 func (f *fakeEngine) Anonymize(_ context.Context, text string) (core.Result, error) {
 	return core.Result{Text: text}, nil
+}
+
+func (f *fakeEngine) ProxyCovers(ctx context.Context) (bool, error) {
+	if f.proxyCovers != nil {
+		return f.proxyCovers(ctx)
+	}
+	return false, nil
 }
 
 func (f *fakeEngine) Restore(_ context.Context, text string) (core.Result, error) {

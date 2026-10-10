@@ -84,6 +84,13 @@ func (e *Engine) RecordBlocked(ctx context.Context, typ string) error {
 	return e.store.RecordBlocked(ctx, e.project.ID, e.adapter, typ)
 }
 
+// ProxyCovers reports whether a live `shade serve` wraps this project's traffic. It is
+// glue for the hook and MCP, which must not import the store themselves: the answer is
+// store.ProxyCovers read for the engine's own project root.
+func (e *Engine) ProxyCovers(ctx context.Context) (bool, error) {
+	return e.store.ProxyCovers(ctx, e.RootPath())
+}
+
 // RootPath returns the engine's project root. The layers above use it to find
 // the project config: .shade.toml lies in the repository root, and not in the directory
 // from which the command was started.
