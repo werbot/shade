@@ -83,9 +83,8 @@ func NewServer(o Options, open Opener) (*Server, error) {
 }
 
 // ServeHTTP routes by path. The four known paths reach their handlers; anything else is a
-// 404. The handlers are skeletons here — the bodies arrive with the tasks that anonymize,
-// restore and stream — which is what lets the router be tested before there is anything to
-// anonymize.
+// 404. The two Anthropic handlers anonymize and forward; chat_completions is still a
+// skeleton, its turn arriving with the OpenAI task.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case pathMessages:
@@ -101,14 +100,93 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleMessages serves the Anthropic Messages endpoint.
+// handleMessages serves the Anthropic Messages endpoint. The body is anonymized and the
+// directive injected before it goes out; the upstream's answer is handed back as it
+// arrived. Restoration of the answer and the streaming pipe arrive with the later tasks.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
-	notImplemented(w)
+	s.forwardAnthropic(w, r)
 }
 
-// handleCountTokens serves the Anthropic token-counting endpoint.
+// handleCountTokens serves the Anthropic token-counting endpoint. It shares the whole body
+// of handleMessages: count_tokens differs only by the absent max_tokens, and the counter
+// must count exactly what the real request would carry.
 func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
-	notImplemented(w)
+	s.forwardAnthropic(w, r)
+}
+
+// forwardAnthropic is what both Anthropic handlers do: read the body, anonymize it with the
+// directive injected, send it upstream and pass the answer back unmodified. A body that
+// cannot be anonymized is refused with a 502 that names no client text (spec §11) and never
+// reaches the upstream.
+func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeShadeError(w, "request body could not be read")
+		return
+	}
+	eng, err := s.open(ctx)
+	if err != nil {
+		writeShadeError(w, "engine could not be opened")
+		return
+	}
+	defer eng.Close()
+
+	anon, err := s.anonymizeAnthropic(ctx, eng, body)
+	if err != nil {
+		writeShadeError(w, "request body could not be anonymized")
+		return
+	}
+	req, err := s.upstreamRequest(ctx, r, anon)
+	if err != nil {
+		writeShadeError(w, "upstream request could not be built")
+		return
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		writeShadeError(w, "upstream request failed")
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vs := range resp.Header {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+// apiError is the refusal body. The shape follows the Anthropic error object so a client
+// reads it the same way, but the type is shade's own: the request never reached the
+// provider.
+type apiError struct {
+	Type  string       `json:"type"`
+	Error apiErrorBody `json:"error"`
+}
+
+// apiErrorBody is the "error" member of an apiError.
+type apiErrorBody struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// writeShadeError refuses the request with a fixed message. It names no client text —
+// never a value, never a parse offset — because a refusal that quotes the body it refused
+// is a leak (spec §11).
+func writeShadeError(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadGateway)
+	body, err := marshalNoEscape(apiError{
+		Type:  "error",
+		Error: apiErrorBody{Type: "shade_error", Message: message},
+	})
+	if err != nil {
+		return
+	}
+	_, _ = w.Write(body)
 }
 
 // handleChatCompletions serves the OpenAI Chat Completions endpoint.
