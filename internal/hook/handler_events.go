@@ -11,6 +11,7 @@ import (
 	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/core"
 	"github.com/werbot/shade/internal/directive"
+	"github.com/werbot/shade/internal/jsonwalk"
 	"github.com/werbot/shade/internal/placeholder"
 	"github.com/werbot/shade/internal/rules"
 )
@@ -186,7 +187,7 @@ func rewriteJSON(raw json.RawMessage, f func(string) (core.Result, error)) (rewr
 		return out, nil
 	}
 	var failed error
-	doc, changed, err := RewriteJSON(raw, func(s string) (string, bool) {
+	doc, changed, err := jsonwalk.RewriteJSON(raw, func(s string) (string, bool) {
 		if failed != nil {
 			return s, false
 		}

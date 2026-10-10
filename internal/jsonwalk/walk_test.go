@@ -1,11 +1,11 @@
-package hook_test
+package jsonwalk_test
 
 import (
 	"bytes"
 	"strings"
 	"testing"
 
-	"github.com/werbot/shade/internal/hook"
+	"github.com/werbot/shade/internal/jsonwalk"
 )
 
 func up(s string) (string, bool) { return strings.ToUpper(s), true }
@@ -23,7 +23,7 @@ func TestRewriteJSONKeepsShapeAndNumbers(t *testing.T) {
 		{`null`, `null`},
 	}
 	for _, c := range cases {
-		got, _, err := hook.RewriteJSON([]byte(c.in), up)
+		got, _, err := jsonwalk.RewriteJSON([]byte(c.in), up)
 		if err != nil {
 			t.Fatalf("%s: %v", c.in, err)
 		}
@@ -35,7 +35,7 @@ func TestRewriteJSONKeepsShapeAndNumbers(t *testing.T) {
 
 func TestRewriteJSONReportsNoChange(t *testing.T) {
 	same := func(s string) (string, bool) { return s, false }
-	got, changed, err := hook.RewriteJSON([]byte(`{"a":"x","b":[1,null]}`), same)
+	got, changed, err := jsonwalk.RewriteJSON([]byte(`{"a":"x","b":[1,null]}`), same)
 	if err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
@@ -49,7 +49,7 @@ func TestRewriteJSONReportsNoChange(t *testing.T) {
 func TestRewriteJSONRoundTripsUnchangedInputByteForByte(t *testing.T) {
 	same := func(s string) (string, bool) { return s, false }
 	in := []byte("{\n\t\"z\": \"<HOST_1>\",\n\t\"a\": [1.0, 1e6, 12345678901234567890, -0, null, true]\n}")
-	got, changed, err := hook.RewriteJSON(in, same)
+	got, changed, err := jsonwalk.RewriteJSON(in, same)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestRewriteJSONRoundTripsUnchangedInputByteForByte(t *testing.T) {
 
 func TestRewriteJSONRejectsJunk(t *testing.T) {
 	for _, raw := range []string{"", "not json", `{"a":"x"} {"b":"y"}`, `{"a":"x"} trailing`} {
-		if _, _, err := hook.RewriteJSON([]byte(raw), up); err == nil {
+		if _, _, err := jsonwalk.RewriteJSON([]byte(raw), up); err == nil {
 			t.Fatalf("%q must not parse", raw)
 		}
 	}
