@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestServeWrapsARealClaudeCodeSession mirrors the gated end-to-end test: a real claude
@@ -39,7 +41,11 @@ func TestServeWrapsARealClaudeCodeSession(t *testing.T) {
 		t.Fatalf("shade init: %v: %s", err, out)
 	}
 
-	session := exec.Command(claude, "-p", "Note the ssh target: "+e2eServeLiteral,
+	// The session is bounded: a stalled claude must fail the test rather than block it —
+	// and with it the deferred cleanup of the serve process the fixture started.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	session := exec.CommandContext(ctx, claude, "-p", "Note the ssh target: "+e2eServeLiteral,
 		"--plugin-dir", filepath.Join(f.home, "claude"),
 		"--permission-mode", "acceptEdits",
 		"--output-format", "stream-json", "--verbose")
