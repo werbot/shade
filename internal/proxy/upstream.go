@@ -33,24 +33,25 @@ var hopByHopHeaders = []string{
 // Content-Length. api_key_env, when the named variable is set and non-empty, replaces the
 // client's own credential, so a subscription session is not overwritten when it is empty.
 //
-// The returned string is the media type of the request built. The media type of the
-// response — the one that decides whether the answer is a stream — is not known until the
-// request has been sent, so the caller reads it from the response.
-func (s *Server) upstreamRequest(ctx context.Context, r *http.Request, body []byte) (*http.Request, string, error) {
+// Whether the answer is a stream is not decided here: that is the media type of the
+// response, which does not exist until the caller has sent the request. The caller reads
+// it from the response — the request's own media type is application/json for every
+// endpoint this proxy serves.
+func (s *Server) upstreamRequest(ctx context.Context, r *http.Request, body []byte) (*http.Request, error) {
 	cfg, err := config.Load(s.opts.Home, s.opts.Project)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	target, err := url.Parse(cfg.Upstream)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	target.Path = strings.TrimSuffix(target.Path, "/") + r.URL.Path
 	target.RawQuery = r.URL.RawQuery
 
 	req, err := http.NewRequestWithContext(ctx, r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	req.Header = r.Header.Clone()
 	for _, h := range hopByHopHeaders {
@@ -65,5 +66,5 @@ func (s *Server) upstreamRequest(ctx context.Context, r *http.Request, body []by
 			req.Header.Set("X-Api-Key", key)
 		}
 	}
-	return req, req.Header.Get("Content-Type"), nil
+	return req, nil
 }

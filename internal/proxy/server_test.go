@@ -37,24 +37,17 @@ func (f *fakeEngine) Close() error { return nil }
 // and the client are judged on the request the upstream received, not on the one the
 // proxy meant to send.
 type recordingUpstream struct {
-	mu       sync.Mutex
-	method   string
-	path     string
-	query    string
-	header   http.Header
-	body     string
-	transfer []string
+	mu     sync.Mutex
+	path   string
+	query  string
+	header http.Header
 }
 
 func (u *recordingUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	b, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
-	u.method = r.Method
 	u.path = r.URL.Path
 	u.query = r.URL.RawQuery
 	u.header = r.Header.Clone()
-	u.body = string(b)
-	u.transfer = append([]string(nil), r.TransferEncoding...)
 	u.mu.Unlock()
 	w.WriteHeader(http.StatusOK)
 }
@@ -64,14 +57,7 @@ func (u *recordingUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (u *recordingUpstream) snapshot() recordingUpstream {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return recordingUpstream{
-		method:   u.method,
-		path:     u.path,
-		query:    u.query,
-		header:   u.header.Clone(),
-		body:     u.body,
-		transfer: append([]string(nil), u.transfer...),
-	}
+	return recordingUpstream{path: u.path, query: u.query, header: u.header.Clone()}
 }
 
 // newTestServer assembles a proxy whose config lives in a temporary home. configBody is
@@ -98,7 +84,7 @@ func newTestServer(t *testing.T, configBody string) *Server {
 // later tasks add.
 func forward(t *testing.T, s *Server, up *recordingUpstream, in *http.Request, body []byte) recordingUpstream {
 	t.Helper()
-	req, _, err := s.upstreamRequest(t.Context(), in, body)
+	req, err := s.upstreamRequest(t.Context(), in, body)
 	if err != nil {
 		t.Fatalf("upstreamRequest: %v", err)
 	}
@@ -223,11 +209,54 @@ func TestHopByHopHeadersAreNotForwarded(t *testing.T) {
 	if got.header.Get("Connection") != "" {
 		t.Errorf("upstream Connection = %q, want it dropped", got.header.Get("Connection"))
 	}
-	if len(got.transfer) != 0 {
-		t.Errorf("upstream TransferEncoding = %v, want none", got.transfer)
+	if got.header.Get("Transfer-Encoding") != "" {
+		t.Errorf("upstream Transfer-Encoding = %q, want it dropped", got.header.Get("Transfer-Encoding"))
 	}
 	// A normal header still arrives: the walk drops the hop-by-hop set, not everything.
 	if got.header.Get("X-Kept") != "yes" {
 		t.Errorf("upstream X-Kept = %q, want %q", got.header.Get("X-Kept"), "yes")
+	}
+}
+
+func TestUpstreamRedirectIsNotFollowed(t *testing.T) {
+	// The client's credentials ride on the request, so a followed redirect would resend
+	// them to whatever host Location names. The client must hand the 3xx back instead.
+	target := &recordingUpstream{}
+	ts := httptest.NewServer(target)
+	defer ts.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, ts.URL+"/v1/messages", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	s := newTestServer(t, fmt.Sprintf("upstream = %q\napi_key_env = \"\"\n", redirector.URL))
+	in := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	in.Header.Set("Authorization", "Bearer subscription-token")
+	in.Header.Set("X-Api-Key", "client-key")
+
+	req, err := s.upstreamRequest(t.Context(), in, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("upstreamRequest: %v", err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		t.Fatalf("do upstream: %v", err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("drain upstream response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("client status = %d, want %d (the redirect itself, not the follower's answer)", resp.StatusCode, http.StatusFound)
+	}
+	got := target.snapshot()
+	if got.path != "" {
+		t.Errorf("redirect target was reached: path = %q", got.path)
+	}
+	if got.header.Get("Authorization") != "" || got.header.Get("X-Api-Key") != "" {
+		t.Errorf("redirect target received credentials: Authorization=%q X-Api-Key=%q",
+			got.header.Get("Authorization"), got.header.Get("X-Api-Key"))
 	}
 }
