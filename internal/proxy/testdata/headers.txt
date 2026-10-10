@@ -1,0 +1,28 @@
+# Header names observed on Claude Code requests when ANTHROPIC_BASE_URL points
+# at a local listener. Recorded on POST /v1/messages?beta=true (run 2, API-key
+# auth) and HEAD /api/hello (run 2); Authorization was observed on POST
+# /v1/messages (run 1, ANTHROPIC_AUTH_TOKEN auth). Values are never recorded.
+#
+# Columns, tab-separated:
+#   <header name>   <yes|no>   yes = the header carries credentials
+Accept	no
+Accept-Encoding	no
+Anthropic-Beta	no
+Anthropic-Dangerous-Direct-Browser-Access	no
+Anthropic-Version	no
+Authorization	yes
+Connection	no
+Content-Length	no
+Content-Type	no
+User-Agent	no
+X-Api-Key	yes
+X-App	no
+X-Claude-Code-Session-Id	no
+X-Stainless-Arch	no
+X-Stainless-Lang	no
+X-Stainless-Os	no
+X-Stainless-Package-Version	no
+X-Stainless-Retry-Count	no
+X-Stainless-Runtime	no
+X-Stainless-Runtime-Version	no
+X-Stainless-Timeout	no
