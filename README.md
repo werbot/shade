@@ -160,7 +160,7 @@ out of step.
 | Event | What shade does |
 | --- | --- |
 | `SessionStart` | Registers the project and hands the model the directive that explains the tokens |
-| `UserPromptSubmit` | With `prompt_gate = "on"` — or `"auto"` when no live proxy covers the project — blocks a prompt whose content looks sensitive and names the types; silent otherwise |
+| `UserPromptSubmit` | With `prompt_gate = "on"` — or `"auto"` when this session's traffic does not go through a live proxy — blocks a prompt whose content looks sensitive and names the types; silent otherwise |
 | `PreToolUse` | Puts the real values back into the tool arguments, so the tool runs for real |
 | `PostToolUse` | Replaces values in the tool output with placeholders, so the model reads tokens |
 | `MessageDisplay` | Shows the real values on your screen; the transcript and the model keep the tokens |
@@ -168,8 +168,8 @@ out of step.
 Two limits are worth knowing before you rely on it:
 
 - **The prompt you type is not anonymized.** A hook cannot rewrite the prompt, so
-  the gate can only block it — and only when you turn it on, or run `auto` with no
-  live proxy covering the project. A secret pasted straight into the prompt reaches
+  the gate can only block it — and only when you turn it on, or run `auto` while this
+  session's traffic misses the proxy. A secret pasted straight into the prompt reaches
   the model unless the gate stops it.
   What is protected is what the tools bring back: files, command output, logs.
 - **Tool arguments are restored optimistically.** The model writes those arguments, so a
@@ -198,18 +198,31 @@ let the OS choose) and serves the Anthropic Messages shape (`/v1/messages`,
 `/v1/messages/count_tokens`) and the OpenAI Chat Completions shape
 (`/v1/chat/completions`). One project per process: the project is resolved once, at
 startup, from `--project DIR` or the working directory — start a second `serve` for a
-second repository. While it runs, it publishes a liveness marker so the `UserPromptSubmit`
-gate can tell that this project's traffic is already anonymized.
+second repository. While it runs, it publishes a liveness marker carrying the address it
+serves on, and the `UserPromptSubmit` gate reads that marker together with your session's
+own `ANTHROPIC_BASE_URL`: only when the variable names exactly the address this proxy
+prints for this project does the gate stand down. Anything else — the variable unset
+because it was exported in another terminal, pointed at a third-party router, or at
+another port — leaves the gate blocking, which is the safe direction. So export the
+printed line in every terminal you start an agent from.
 
 `upstream` and `api_key_env` decide where the traffic goes and whose credential rides on
 it. With `api_key_env` empty the client's own credentials are forwarded untouched, so a
-subscription session keeps working.
+subscription session keeps working. The default is not empty: when the named variable is
+set in your environment, the proxy drops the client's `Authorization` header and sends its
+own `X-Api-Key` instead — and it says so on stderr, naming the variable but not the key,
+because a session on a subscription whose environment happens to carry that variable would
+otherwise move onto another billing without a word. Set `api_key_env = ""` to keep the
+client's own credentials.
 
 `stream_mode` decides how a streamed answer is relayed. `incremental` — the default —
 restores and sends each text delta as it arrives, which is what Claude Code expects.
 `buffered` collects a whole text block and restores it at its stop, so an unresolved token
 can refuse the answer before it reaches the client; it is for non-interactive clients and
-is **not** the behaviour Claude Code expects.
+is **not** the behaviour Claude Code expects. Either way, a stream the provider cuts short
+— the connection closing before the terminator frame — is not left to end silently: the
+proxy closes it with the same error frame a refusal uses, so the client sees a failure
+rather than a truncated answer it would take for a finished one.
 
 ## 🔌 MCP
 
@@ -426,7 +439,7 @@ written for a future version will not break today's binary.
 | --- | --- | --- |
 | `fail_policy` | `fail_closed` | `fail_closed` blocks an answer with unresolved placeholders (exit 3); `fail_open_log` lets it through with a warning |
 | `entities_ttl` | `90d` | Default age for `shade entities prune` |
-| `prompt_gate` | `off` | `on` makes the `UserPromptSubmit` hook block a prompt whose content looks sensitive, naming the types. `auto` blocks the same way unless a live `shade serve` covers this project, so a prompt whose traffic goes around the proxy is stopped |
+| `prompt_gate` | `off` | `on` makes the `UserPromptSubmit` hook block a prompt whose content looks sensitive, naming the types. `auto` blocks the same way unless a live `shade serve` covers this project **and** this session points at the address it printed, so a prompt whose traffic goes around the proxy is stopped |
 | `stream_mode` | `incremental` | How `shade serve` relays a streamed answer. `incremental` restores and sends each text delta as it arrives; `buffered` collects a block's text and restores it whole at the block's stop, so an unresolved token can refuse the answer before it reaches the client. `buffered` is not the behaviour Claude Code expects — it is for non-interactive clients |
 | `upstream` | `https://api.anthropic.com` | The real endpoint `shade serve` forwards anonymized traffic to |
 | `api_key_env` | `ANTHROPIC_API_KEY` | The environment variable whose value `shade serve` substitutes for the client's key; an empty value forwards the client's own credentials untouched |

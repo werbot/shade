@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -50,9 +51,14 @@ func (h Handler) userPromptSubmit(ctx context.Context, e Engine, ev Event) (Resp
 	// The marker is consulted only in auto: off and on answer from the config alone, and a
 	// database round-trip on the hot path of every prompt is not free. A ProxyCovers failure
 	// is fail-open like any other runtime failure (see Handle).
+	//
+	// auto answers "does this traffic go through the proxy?" — so it asks about this
+	// session's environment too, not only about the store: a live proxy for the project
+	// whose base URL this session never exported leaves the prompt going straight to the
+	// provider, and that is the one case auto exists to catch (spec §10).
 	covered := false
 	if cfg.PromptGate == config.PromptGateAuto {
-		covered, err = e.ProxyCovers(ctx)
+		covered, err = e.ProxyCovers(ctx, os.Getenv("ANTHROPIC_BASE_URL"))
 		if err != nil {
 			return Response{}, err
 		}

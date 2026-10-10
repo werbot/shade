@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func runOpenAIPipe(t *testing.T, s *Server, eng Engine, src string) (string, err
 func runOpenAIPipeMode(t *testing.T, s *Server, eng Engine, mode, src string) (string, error) {
 	t.Helper()
 	var dst streamRecorder
-	err := s.pipeOpenAISSE(context.Background(), eng, mode, strings.NewReader(src), &dst)
+	err := s.pipeOpenAISSE(context.Background(), eng, streamCfg(t, s, mode), strings.NewReader(src), &dst)
 	return dst.String(), err
 }
 
@@ -298,5 +299,66 @@ func TestOpenAISSEForwardsAnUnparseableFrame(t *testing.T) {
 	}
 	if !strings.Contains(out, openAIChunk(page)) {
 		t.Errorf("output = %q, want the unparseable frame forwarded as it came", out)
+	}
+}
+
+// TestBrokenOpenAIStreamEndsWithARefusalFrame is the OpenAI half of the empty-200 problem: a
+// stream that stops before [DONE] must not leave the client with one that simply ends. The
+// break is stated in the only frame the format has for it — the refusal body as a data frame,
+// followed by [DONE] — and the held tail is still dropped on the way out.
+func TestBrokenOpenAIStreamEndsWithARefusalFrame(t *testing.T) {
+	src := chunkDelta(`"role":"assistant","content":"the host is <HOST_1"`) // no [DONE]
+	s := walkerServer(t, nil)
+	w := httptest.NewRecorder()
+	s.streamSSE(context.Background(), &answerEngine{replace: [][2]string{{"<HOST_1>", "db.prod.local"}}},
+		s.openaiShape(), streamCfg(t, s, config.StreamIncremental), streamResponse(src), w)
+
+	got := w.Body.String()
+	body := string(errorBody("shade_stream_incomplete", "the upstream stream ended before it was complete"))
+	if !strings.HasSuffix(got, "data: "+body+"\n\n"+openAIDone) {
+		t.Fatalf("output = %q, want it to end with the refusal frame and [DONE]", got)
+	}
+	if !strings.Contains(got, "the host is ") {
+		t.Errorf("output = %q, want the restored text the upstream did send", got)
+	}
+	if strings.Contains(got, "<HOST_1") {
+		t.Errorf("a raw placeholder fragment reached the client: %q", got)
+	}
+}
+
+// TestCompleteOpenAIStreamGetsNoRefusalFrame is the negative: a stream that reached [DONE] ends
+// where the upstream ended it.
+func TestCompleteOpenAIStreamGetsNoRefusalFrame(t *testing.T) {
+	stream := chunkDelta(`"role":"assistant","content":"hello"`) + finishChunk("stop") + openAIDone
+	s := walkerServer(t, nil)
+	w := httptest.NewRecorder()
+	s.streamSSE(context.Background(), &answerEngine{}, s.openaiShape(),
+		streamCfg(t, s, config.StreamIncremental), streamResponse(stream), w)
+	if got := w.Body.String(); got != stream {
+		t.Errorf("output = %q, want the stream untouched %q", got, stream)
+	}
+}
+
+// TestRefusedOpenAIStreamIsNotDoubled pins the other negative: a buffered refusal already wrote
+// the refusal frame and [DONE], so nothing may follow them.
+func TestRefusedOpenAIStreamIsNotDoubled(t *testing.T) {
+	const token = "<HOST_1>"
+	src := chunkDelta(`"role":"assistant","content":"the host is `+token+`"`) +
+		finishChunk("stop") // no [DONE] after the refusal point
+	s := walkerServer(t, nil)
+	w := httptest.NewRecorder()
+	eng := &answerEngine{unresolved: []placeholder.Token{{Type: "HOST", Raw: token}}}
+	s.streamSSE(context.Background(), eng, s.openaiShape(),
+		streamCfg(t, s, config.StreamBuffered), streamResponse(src), w)
+
+	got := w.Body.String()
+	if n := strings.Count(got, string(errorBody("shade_unresolved", "1 placeholders could not be restored: HOST"))); n != 1 {
+		t.Errorf("refusal frames = %d, want exactly 1: %q", n, got)
+	}
+	if strings.Contains(got, "shade_stream_incomplete") {
+		t.Errorf("a refusal must not be followed by a broken-stream frame: %q", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("the refusal leaked the token: %q", got)
 	}
 }

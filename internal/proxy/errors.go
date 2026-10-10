@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -10,6 +11,12 @@ import (
 	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/placeholder"
 )
+
+// errStreamBroken ends a stream whose terminator never arrived: the upstream closed early or
+// the read failed. It is what separates a stream that ended where it was told to from one that
+// simply stops, so the caller can close it out with the format's terminal error frame instead of
+// leaving the client with a truncated answer it cannot tell from a finished one.
+var errStreamBroken = errors.New("proxy: the stream ended before its terminator")
 
 // sanitizeError anonymizes an upstream error body instead of cutting it: a client matches
 // error wording to decide whether to retry, and a cut body would cost that. The body is

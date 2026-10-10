@@ -97,8 +97,10 @@ func TestServePrintsTheWrapLine(t *testing.T) {
 	if got := p.err.String(); got != "" {
 		t.Fatalf("stderr must stay empty, got %q", got)
 	}
+	// The address the session is told to export is the one the gate checks, so the printed
+	// line is what is asked about: a marker whose port the line does not name covers nothing.
 	proj, st := testStore(t, home, dir)
-	if ok, err := st.ProxyCovers(context.Background(), proj.RootPath); err != nil || !ok {
+	if ok, err := st.ProxyCovers(context.Background(), proj.RootPath, strings.TrimPrefix(line, "export ANTHROPIC_BASE_URL=")); err != nil || !ok {
 		t.Fatalf("a running serve must cover its project: ok=%v err=%v", ok, err)
 	}
 }
@@ -113,10 +115,10 @@ func TestServeClearsItsMarkerOnSignals(t *testing.T) {
 		t.Run(sig.String(), func(t *testing.T) {
 			home, dir := t.TempDir(), gitDir(t)
 			p := startServe(t, bin, home, dir)
-			waitForLine(t, p.out, 10*time.Second)
+			line := waitForLine(t, p.out, 10*time.Second)
 
 			proj, st := testStore(t, home, dir)
-			if ok, err := st.ProxyCovers(context.Background(), proj.RootPath); err != nil || !ok {
+			if ok, err := st.ProxyCovers(context.Background(), proj.RootPath, strings.TrimPrefix(line, "export ANTHROPIC_BASE_URL=")); err != nil || !ok {
 				t.Fatalf("serve must write its marker while running: ok=%v err=%v", ok, err)
 			}
 

@@ -6,14 +6,10 @@ package proxy
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
-	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/core"
-	"github.com/werbot/shade/internal/placeholder"
 )
 
 // The paths the proxy routes. Matching is on r.URL.Path, so the query Claude Code attaches
@@ -34,7 +30,6 @@ type Engine interface {
 	Anonymize(ctx context.Context, text string) (core.Result, error)
 	Restore(ctx context.Context, text string) (core.Result, error)
 	RecordBlocked(ctx context.Context, typ string) error
-	RootPath() string
 	Close() error
 }
 
@@ -103,25 +98,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// shape is the three format-specific steps the shared forward runs: how a request body is
-// anonymized, how an answer is restored, and how a stream is piped. Anthropic and OpenAI differ
-// only in these, so the forwarding, the error arms and the policy are one path, not two.
-type shape struct {
-	anonymize func(context.Context, Engine, []byte) ([]byte, error)
-	restore   func(context.Context, Engine, []byte) ([]byte, []placeholder.Token, error)
-	pipe      func(context.Context, Engine, string, io.Reader, streamDst) error
-}
-
-// anthropicShape is the Anthropic Messages format.
-func (s *Server) anthropicShape() shape {
-	return shape{anonymize: s.anonymizeAnthropic, restore: s.restoreAnthropic, pipe: s.pipeAnthropicSSE}
-}
-
-// openaiShape is the OpenAI Chat Completions format.
-func (s *Server) openaiShape() shape {
-	return shape{anonymize: s.anonymizeOpenAI, restore: s.restoreOpenAI, pipe: s.pipeOpenAISSE}
-}
-
 // handleMessages serves the Anthropic Messages endpoint. The body is anonymized and the
 // directive injected before it goes out; the answer is handed back with the real values put
 // in, an event stream frame by frame.
@@ -134,163 +110,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 // must count exactly what the real request would carry.
 func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	s.forward(w, r, s.anthropicShape())
-}
-
-// forward is what every handler does: read the body, anonymize it with the directive injected,
-// send it upstream and hand the answer back with the real values put in. A body that cannot be
-// anonymized is refused with a 502 that names no client text (spec §11) and never reaches the
-// upstream.
-//
-// A non-success status is sanitized: its body is anonymized rather than cut, so the wording
-// a client retries on survives while no value travels in it. A success is either an event
-// stream, which is rewritten frame by frame with a safe-boundary flush, or a JSON answer
-// whose values are restored. An answer that is neither — a gateway's own page — is handed on
-// unmodified. A restore the engine itself failed is not: the policy decides, so a broken store
-// never silently hands the client an answer that may still hold placeholders.
-func (s *Server) forward(w http.ResponseWriter, r *http.Request, sh shape) {
-	ctx := r.Context()
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeShadeError(w, "request body could not be read")
-		return
-	}
-	eng, err := s.open(ctx)
-	if err != nil {
-		writeShadeError(w, "engine could not be opened")
-		return
-	}
-	defer eng.Close()
-
-	anon, err := sh.anonymize(ctx, eng, body)
-	if err != nil {
-		writeShadeError(w, "request body could not be anonymized")
-		return
-	}
-	req, err := s.upstreamRequest(ctx, r, anon)
-	if err != nil {
-		writeShadeError(w, "upstream request could not be built")
-		return
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		writeShadeError(w, "upstream request failed")
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		raw, err := io.ReadAll(resp.Body)
-		if err != nil {
-			writeShadeError(w, "upstream answer could not be read")
-			return
-		}
-		writeUpstreamAnswer(w, resp, s.sanitizeError(ctx, eng, resp.StatusCode, raw))
-		return
-	}
-	// A stream is decided by the response's media type, not the request's: the request is
-	// always application/json, and stream:true only shows up in the answer.
-	if isEventStream(resp.Header.Get("Content-Type")) {
-		s.streamSSE(ctx, eng, sh.pipe, resp, w)
-		return
-	}
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		writeShadeError(w, "upstream answer could not be read")
-		return
-	}
-	// The policy is read before the restore, so an engine failure can be answered under it.
-	// It is read here rather than carried from upstreamRequest, which loads the same config:
-	// a config that cannot be read here could not have been read there either, so the request
-	// would have failed before an answer arrived. A second read only fails on a race with an
-	// edit on disk, and then an empty policy fails closed, which is safe.
-	var policy string
-	if cfg, err := config.Load(s.opts.Home, s.opts.Project); err == nil {
-		policy = cfg.FailPolicy
-	}
-	restored, unresolved, err := sh.restore(ctx, eng, raw)
-	if errors.Is(err, errNotAJSONAnswer) {
-		// Not a JSON object — a stream, or a gateway's own page. It is not this arm's to
-		// rewrite, so it goes on as it arrived.
-		writeUpstreamAnswer(w, resp, raw)
-		return
-	}
-	if err != nil {
-		// The engine refused, not the parser. The answer may still hold placeholders, so the
-		// policy decides: fail_open_log hands it on as it arrived, fail_closed refuses with
-		// the types collected before the failure, or a generic line when there are none.
-		fmt.Fprintf(s.opts.Diag, "proxy: restore failed: %v\n", err)
-		if policy == config.FailOpenLog {
-			writeUpstreamAnswer(w, resp, raw)
-			return
-		}
-		blocked, reason := s.refuseUnresolved(ctx, eng, policy, unresolved)
-		if !blocked {
-			reason = errorBody("shade_unresolved", "the answer could not be restored")
-		}
-		writeErrorBody(w, reason)
-		return
-	}
-	if blocked, reason := s.refuseUnresolved(ctx, eng, policy, unresolved); blocked {
-		writeErrorBody(w, reason)
-		return
-	}
-	writeUpstreamAnswer(w, resp, restored)
-}
-
-// writeUpstreamAnswer hands the upstream's status and headers to the client along with body.
-func writeUpstreamAnswer(w http.ResponseWriter, resp *http.Response, body []byte) {
-	copyResponseHeaders(w, resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(body)
-}
-
-// isEventStream reports whether the upstream answered with an event stream. The media type
-// may carry parameters (charset), so only its prefix is compared.
-func isEventStream(contentType string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/event-stream")
-}
-
-// streamSSE hands an event stream to the client frame by frame. The status and headers go out
-// first, so once the first frame is written the answer can no longer be replaced by an error: a
-// failure past that point is reported by pipe where it can be (an early end) and the connection
-// is left as it is. pipe is the format's stream rewriter.
-func (s *Server) streamSSE(ctx context.Context, eng Engine, pipe func(context.Context, Engine, string, io.Reader, streamDst) error, resp *http.Response, w http.ResponseWriter) {
-	copyResponseHeaders(w, resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	dst, ok := w.(streamDst)
-	if !ok {
-		// Every net/http server and httptest recorder implements Flush; a writer that does
-		// not simply buffers the stream rather than losing it.
-		dst = nopFlushWriter{w}
-	}
-	dst.Flush()
-	// The stream mode comes from the config, read here like the fail policy on the
-	// non-streaming arm: a config that cannot be read leaves the default, incremental.
-	mode := config.DefaultStreamMode
-	if cfg, err := config.Load(s.opts.Home, s.opts.Project); err == nil {
-		mode = cfg.StreamMode
-	}
-	_ = pipe(ctx, eng, mode, resp.Body, dst)
-}
-
-// nopFlushWriter adapts a ResponseWriter that does not implement Flush.
-type nopFlushWriter struct{ io.Writer }
-
-func (nopFlushWriter) Flush() {}
-
-// copyResponseHeaders copies the upstream's headers. Content-Length is left out: every arm
-// rewrites the body, so the upstream's length no longer describes what is written and a
-// stale one would truncate the answer on a real server.
-func copyResponseHeaders(w http.ResponseWriter, h http.Header) {
-	for k, vs := range h {
-		if http.CanonicalHeaderKey(k) == "Content-Length" {
-			continue
-		}
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
 }
 
 // handleChatCompletions serves the OpenAI Chat Completions endpoint. It shares the whole body

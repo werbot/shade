@@ -82,8 +82,17 @@ func runPipe(t *testing.T, s *Server, eng Engine, src string) (string, error) {
 func runPipeMode(t *testing.T, s *Server, eng Engine, mode, src string) (string, error) {
 	t.Helper()
 	var dst streamRecorder
-	err := s.pipeAnthropicSSE(context.Background(), eng, mode, strings.NewReader(src), &dst)
+	err := s.pipeAnthropicSSE(context.Background(), eng, streamCfg(t, s, mode), strings.NewReader(src), &dst)
 	return dst.String(), err
+}
+
+// streamCfg is the config a pipe is driven with: the server's own home under the mode under
+// test, which is what the handler passes it after its one config read.
+func streamCfg(t *testing.T, s *Server, mode string) config.Config {
+	t.Helper()
+	cfg := s.testConfig(t)
+	cfg.StreamMode = mode
+	return cfg
 }
 
 // outputFrames parses what was written back into frames, using the same reader the pipe does.
@@ -247,7 +256,7 @@ func TestSSEForwardsPingImmediately(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- s.pipeAnthropicSSE(context.Background(), &answerEngine{}, config.StreamIncremental, src, dst)
+		done <- s.pipeAnthropicSSE(context.Background(), &answerEngine{}, streamCfg(t, s, config.StreamIncremental), src, dst)
 	}()
 
 	select {
@@ -302,7 +311,7 @@ func TestSSERestoresTextSplitInsideOneFrame(t *testing.T) {
 	s := walkerServer(t, nil)
 	var dst streamRecorder
 	err := s.pipeAnthropicSSE(context.Background(), &answerEngine{replace: [][2]string{{token, value}}},
-		config.StreamIncremental, iotest.OneByteReader(strings.NewReader(src)), &dst)
+		streamCfg(t, s, config.StreamIncremental), iotest.OneByteReader(strings.NewReader(src)), &dst)
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
@@ -518,7 +527,8 @@ func TestSSETwoStreamsDoNotShareState(t *testing.T) {
 	run := func(value string) result {
 		var dst streamRecorder
 		src := &barrierReader{chunks: [][]byte{[]byte(f1), []byte(tail)}, wg: &wg}
-		err := s.pipeAnthropicSSE(context.Background(), &answerEngine{replace: [][2]string{{"<HOST_1>", value}}}, config.StreamIncremental, src, &dst)
+		err := s.pipeAnthropicSSE(context.Background(), &answerEngine{replace: [][2]string{{"<HOST_1>", value}}},
+			streamCfg(t, s, config.StreamIncremental), src, &dst)
 		return result{out: dst.String(), err: err}
 	}
 
@@ -619,16 +629,94 @@ func (w *noFlushWriter) Write(p []byte) (int, error) { return w.body.Write(p) }
 // assertion and the body is empty.
 func TestStreamAnthropicBuffersWhenTheWriterCannotFlush(t *testing.T) {
 	stream := textDeltaFrame(t, 0, "hello") + sseEvent("message_stop", `{"type":"message_stop"}`)
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": {"text/event-stream"}},
-		Body:       io.NopCloser(strings.NewReader(stream)),
-	}
 	w := &noFlushWriter{}
 	s := walkerServer(t, nil)
-	s.streamSSE(context.Background(), &answerEngine{}, s.pipeAnthropicSSE, resp, w)
+	s.streamSSE(context.Background(), &answerEngine{}, s.anthropicShape(),
+		streamCfg(t, s, config.StreamIncremental), streamResponse(stream), w)
 	if got := w.body.String(); got != stream {
 		t.Errorf("buffered stream = %q, want the whole stream %q", got, stream)
+	}
+}
+
+// streamResponse is the upstream answer a stream test hands to streamSSE: a 200 whose media
+// type is the one that decides the streaming arm, and body as the whole stream.
+func streamResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+// brokenStreamFrame is the terminal frame a stream that stopped early must end with: the
+// refusal body in the Messages API's own error event.
+var brokenStreamFrame = "event: error\ndata: " +
+	string(errorBody("shade_stream_incomplete", "the upstream stream ended before it was complete")) + "\n\n"
+
+// TestBrokenAnthropicStreamEndsWithAnErrorFrame is the empty 200 the plan refused to leave
+// behind: an upstream that stops before message_stop hands the client a stream that simply
+// ends, which is indistinguishable from a finished answer and is not retried. The break must
+// therefore be stated in the protocol's own terminal frame — and the held tail must still be
+// dropped: a raw token never rides out on the way to say so.
+func TestBrokenAnthropicStreamEndsWithAnErrorFrame(t *testing.T) {
+	src := sseEvent("message_start", `{"type":"message_start"}`) +
+		textDeltaFrame(t, 0, "the host is <HOST_1") // no message_stop: the provider dropped
+	s := walkerServer(t, nil)
+	w := httptest.NewRecorder()
+	s.streamSSE(context.Background(), &answerEngine{replace: [][2]string{{"<HOST_1>", "db.prod.local"}}},
+		s.anthropicShape(), streamCfg(t, s, config.StreamIncremental), streamResponse(src), w)
+
+	got := w.Body.String()
+	if !strings.HasSuffix(got, brokenStreamFrame) {
+		t.Fatalf("output = %q, want it to end with the terminal frame %q", got, brokenStreamFrame)
+	}
+	if !strings.HasPrefix(got, sseEvent("message_start", `{"type":"message_start"}`)) {
+		t.Errorf("output = %q, want the frames the upstream did send to arrive first", got)
+	}
+	if !strings.Contains(got, "the host is ") {
+		t.Errorf("output = %q, want the restored text the upstream did send", got)
+	}
+	if strings.Contains(got, "<HOST_1") {
+		t.Errorf("a raw placeholder fragment reached the client: %q", got)
+	}
+}
+
+// TestCompleteAnthropicStreamGetsNoErrorFrame is the negative: the frame belongs to a stream
+// that broke. A stream that reached message_stop ends where the upstream ended it, and adding
+// an error to it would fail a working answer.
+func TestCompleteAnthropicStreamGetsNoErrorFrame(t *testing.T) {
+	stream := textDeltaFrame(t, 0, "hello") + sseEvent("message_stop", `{"type":"message_stop"}`)
+	s := walkerServer(t, nil)
+	w := httptest.NewRecorder()
+	s.streamSSE(context.Background(), &answerEngine{}, s.anthropicShape(),
+		streamCfg(t, s, config.StreamIncremental), streamResponse(stream), w)
+	if got := w.Body.String(); got != stream {
+		t.Errorf("output = %q, want the stream untouched %q", got, stream)
+	}
+}
+
+// TestRefusedAnthropicStreamIsNotDoubled pins the other negative: a refusal already ended the
+// stream with its own error frame, so the broken-stream frame must not follow it.
+func TestRefusedAnthropicStreamIsNotDoubled(t *testing.T) {
+	const token = "<HOST_1>"
+	src := sseEvent("message_start", `{"type":"message_start"}`) +
+		textDeltaFrame(t, 0, "the host is "+token) +
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`)
+	s := walkerServer(t, nil)
+	w := httptest.NewRecorder()
+	eng := &answerEngine{unresolved: []placeholder.Token{{Type: "HOST", Raw: token}}}
+	s.streamSSE(context.Background(), eng, s.anthropicShape(),
+		streamCfg(t, s, config.StreamBuffered), streamResponse(src), w)
+
+	got := w.Body.String()
+	if n := strings.Count(got, "event: error"); n != 1 {
+		t.Errorf("error frames = %d, want exactly 1 (the refusal): %q", n, got)
+	}
+	if strings.Contains(got, "shade_stream_incomplete") {
+		t.Errorf("a refusal must not be followed by a broken-stream frame: %q", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("the refusal leaked the token: %q", got)
 	}
 }
 
@@ -872,7 +960,7 @@ func TestBufferedStillForwardsPing(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- s.pipeAnthropicSSE(context.Background(), &answerEngine{}, config.StreamBuffered, src, dst)
+		done <- s.pipeAnthropicSSE(context.Background(), &answerEngine{}, streamCfg(t, s, config.StreamBuffered), src, dst)
 	}()
 
 	select {
@@ -1040,4 +1128,118 @@ func TestBufferedReportsTextDroppedAtEarlyEOF(t *testing.T) {
 	if line := diag.String(); strings.Contains(line, value) {
 		t.Errorf("diag must carry no value: %q", line)
 	}
+}
+
+// blockStartFrame builds a content_block_start opening a text block at index with text.
+func blockStartFrame(t *testing.T, index int, text string) string {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{
+		"type":          "content_block_start",
+		"index":         index,
+		"content_block": map[string]any{"type": "text", "text": text},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sseEvent("content_block_start", string(data))
+}
+
+// TestSSEStartBlockTextIsRestored pins the frame the Messages API opens a block with: the empty
+// string. A non-standard upstream sends text there instead, and the pipe forwarded it byte for
+// byte in both modes — a raw token reaching the client through a frame no restore ever saw, and
+// in buffered mode a place where fail_closed could not refuse. The start frame is handled as the
+// text it carries: through the flusher in incremental mode, into the block's buffer in buffered.
+func TestSSEStartBlockTextIsRestored(t *testing.T) {
+	const token, value = "<HOST_1>", "db.prod.local"
+	start := blockStartFrame(t, 0, "the host is "+token)
+
+	t.Run("incremental", func(t *testing.T) {
+		src := start + sseEvent("message_stop", `{"type":"message_stop"}`)
+		out, err := runPipe(t, walkerServer(t, nil), &answerEngine{replace: [][2]string{{token, value}}}, src)
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		if got := startBlockText(t, out); got != "the host is "+value {
+			t.Errorf("content_block_start text = %q, want the value put back", got)
+		}
+		if strings.Contains(out, token) {
+			t.Errorf("the raw placeholder reached the client: %q", out)
+		}
+	})
+
+	t.Run("buffered refuses an unresolved token", func(t *testing.T) {
+		src := start + sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+			sseEvent("message_stop", `{"type":"message_stop"}`)
+		eng := &answerEngine{unresolved: []placeholder.Token{{Type: "HOST", Raw: token}}}
+		out, err := runPipeMode(t, walkerServer(t, nil), eng, config.StreamBuffered, src)
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		if strings.Contains(out, token) {
+			t.Errorf("the refusal leaked the token: %q", out)
+		}
+		want := "event: error\ndata: " + string(errorBody("shade_unresolved", "1 placeholders could not be restored: HOST"))
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want the refusal frame %q", out, want)
+		}
+		if got := eng.blockedTypes(); !slices.Equal(got, []string{"HOST"}) {
+			t.Errorf("blocked types = %v, want one HOST row", got)
+		}
+	})
+
+	t.Run("buffered emits it with the block", func(t *testing.T) {
+		src := start + sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+			sseEvent("message_stop", `{"type":"message_stop"}`)
+		out, err := runPipeMode(t, walkerServer(t, nil), &answerEngine{replace: [][2]string{{token, value}}}, config.StreamBuffered, src)
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		// The start frame goes out blank, exactly as the API defines it, and the text is
+		// emitted restored once at the block's stop.
+		if got := startBlockText(t, out); got != "" {
+			t.Errorf("content_block_start text = %q, want it blank", got)
+		}
+		if got := collectedText(out); got != "the host is "+value {
+			t.Errorf("restored text = %q, want %q", got, "the host is "+value)
+		}
+	})
+}
+
+// TestSSEStartBlockTextSurvivesATokenSplit pins that the start frame's text joins the flusher
+// like any delta: a placeholder that begins in it and finishes in the first text_delta is still
+// restored whole.
+func TestSSEStartBlockTextSurvivesATokenSplit(t *testing.T) {
+	const token, value = "<HOST_1>", "db.prod.local"
+	src := blockStartFrame(t, 0, "the host is "+token[:4]) +
+		textDeltaFrame(t, 0, token[4:]) +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+	out, err := runPipe(t, walkerServer(t, nil), &answerEngine{replace: [][2]string{{token, value}}}, src)
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if got := startBlockText(t, out) + collectedText(out); got != "the host is "+value {
+		t.Errorf("text = %q, want %q", got, "the host is "+value)
+	}
+	if strings.Contains(out, "<HOST") {
+		t.Errorf("a raw placeholder fragment reached the client: %q", out)
+	}
+}
+
+// startBlockText is the text of the content_block_start frame in the output, "" when there is
+// no such frame or it carries no text.
+func startBlockText(t *testing.T, out string) string {
+	t.Helper()
+	for _, frame := range outputFrames(out) {
+		if frame.event != "content_block_start" {
+			continue
+		}
+		data, ok := parseFrameData(frame)
+		if !ok {
+			t.Fatalf("content_block_start is not a json object: %s", frame.data)
+		}
+		block, _ := data["content_block"].(map[string]any)
+		text, _ := block["text"].(string)
+		return text
+	}
+	return ""
 }

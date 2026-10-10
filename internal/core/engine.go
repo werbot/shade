@@ -84,11 +84,12 @@ func (e *Engine) RecordBlocked(ctx context.Context, typ string) error {
 	return e.store.RecordBlocked(ctx, e.project.ID, e.adapter, typ)
 }
 
-// ProxyCovers reports whether a live `shade serve` wraps this project's traffic. It is
-// glue for the hook and MCP, which must not import the store themselves: the answer is
-// store.ProxyCovers read for the engine's own project root.
-func (e *Engine) ProxyCovers(ctx context.Context) (bool, error) {
-	return e.store.ProxyCovers(ctx, e.RootPath())
+// ProxyCovers reports whether a live `shade serve` is on the path of this project's traffic.
+// It is glue for the hook and MCP, which must not import the store themselves: the answer is
+// store.ProxyCovers read for the engine's own project root and for the base URL the session
+// is pointed at.
+func (e *Engine) ProxyCovers(ctx context.Context, upstreamURL string) (bool, error) {
+	return e.store.ProxyCovers(ctx, e.RootPath(), upstreamURL)
 }
 
 // RootPath returns the engine's project root. The layers above use it to find

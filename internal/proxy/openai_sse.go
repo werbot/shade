@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/placeholder"
 )
 
@@ -37,13 +38,14 @@ type openAIToolKey struct {
 // The flusher and the accumulators are local to this call: two requests never share them. dst is
 // flushed after every frame, so an idle watchdog never ends the session. A stream that ends
 // without [DONE] is not silent: the held tail is dropped (a raw token must never reach the
-// client) and the loss is reported on diag.
-func (s *Server) pipeOpenAISSE(ctx context.Context, e Engine, mode string, src io.Reader, dst streamDst) error {
+// client) and the loss is reported on diag, and the caller is told the stream broke so it can
+// say so to the client in the format's own terminal frame.
+func (s *Server) pipeOpenAISSE(ctx context.Context, e Engine, cfg config.Config, src io.Reader, dst streamDst) error {
 	br := bufio.NewReader(src)
 	fl := placeholder.NewFlusher()
 	// bs is non-nil only in buffered mode; its byIndex holds each choice's collected content and
 	// its policy decides a refusal.
-	bs := s.newBufferedState(mode)
+	bs := newBufferedState(cfg)
 	toolArgs := make(map[openAIToolKey][]byte)
 
 	for {
@@ -53,10 +55,7 @@ func (s *Server) pipeOpenAISSE(ctx context.Context, e Engine, mode string, src i
 			// and the loss is made visible instead of silent.
 			s.flushOpenAIWithheld(fl, bs, "at stream end")
 			fmt.Fprintf(s.opts.Diag, "proxy: stream ended early: %v\n", err)
-			if err == io.EOF {
-				return io.ErrUnexpectedEOF
-			}
-			return err
+			return errStreamBroken
 		}
 		if isOpenAIDone(frame) {
 			// The terminator ends the content stream: the held tail is dropped and reported, and
@@ -150,15 +149,7 @@ func (s *Server) rewriteOpenAIContent(ctx context.Context, e Engine, fl *placeho
 	out := fl.Write(text)
 	restored := out
 	if out != "" {
-		res, err := e.Restore(ctx, out)
-		if err != nil {
-			// Incremental streaming cannot fail closed (spec §7): the bytes are already on their
-			// way, so they go on as they came and the failure is only reported.
-			fmt.Fprintf(s.opts.Diag, "proxy: restore failed: %v\n", err)
-		} else {
-			s.reportRecordErr(res.RecordErr)
-			restored = res.Text
-		}
+		restored = s.restoreStream(ctx, e, out)
 	}
 	delta["content"] = restored
 	return restored != text

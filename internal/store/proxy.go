@@ -46,11 +46,18 @@ func (s *Store) ClearProxyMarker(ctx context.Context) error {
 	return nil
 }
 
-// ProxyCovers reports whether a live proxy is serving this project. It is true only when
-// the marker is fresh, its process is alive, and it names the same project: a proxy
-// started in another repository does not wrap this one's traffic, so it must not silence
-// the gate here.
-func (s *Store) ProxyCovers(ctx context.Context, rootPath string) (bool, error) {
+// ProxyCovers reports whether a live proxy both serves this project and is the endpoint the
+// session is pointed at. It is true only when the marker is fresh, its process is alive, it
+// names the same project, and upstreamURL is exactly the address it serves on.
+//
+// Both halves are needed, and neither answers alone. The marker alone answers "is a proxy
+// running for this project" — which says nothing about a session opened in another terminal
+// that never exported the base URL, and whose traffic therefore goes straight to the
+// provider. The variable alone may name a third-party router that has nothing to do with
+// this project. Only the pair means the proxy is on the path, and every other combination —
+// including a value that differs by a host name, a port or a trailing slash — falls to the
+// safe side and is reported as not covered.
+func (s *Store) ProxyCovers(ctx context.Context, rootPath, upstreamURL string) (bool, error) {
 	var value string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key=?`, proxyMarkerKey).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -70,7 +77,16 @@ func (s *Store) ProxyCovers(ctx context.Context, rootPath string) (bool, error) 
 	if m.RootPath != rootPath {
 		return false, nil
 	}
-	return pidAlive(m.PID), nil
+	if !pidAlive(m.PID) {
+		return false, nil
+	}
+	return strings.TrimRight(upstreamURL, "/") == proxyAddress(m.Port), nil
+}
+
+// proxyAddress is the address a proxy serves on: loopback only, the same line `shade serve`
+// prints for the session to export. The proxy never binds anything else.
+func proxyAddress(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
 // parseProxyMarker reads `<pid>:<port>:<ts>:<root_path>`. SplitN keeps the root path whole:

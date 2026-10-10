@@ -53,10 +53,8 @@ func (s *Server) restoreAnthropic(ctx context.Context, e Engine, body []byte) ([
 	}
 
 	var st restoreState
-	if c, ok := doc["content"]; ok {
-		if err := s.restoreContent(ctx, e, c, &st); err != nil {
-			return nil, st.unresolved, err
-		}
+	if err := s.restoreContent(ctx, e, doc, &st); err != nil {
+		return nil, st.unresolved, err
 	}
 	if !st.changed {
 		return body, st.unresolved, nil
@@ -68,11 +66,22 @@ func (s *Server) restoreAnthropic(ctx context.Context, e Engine, body []byte) ([
 	return out, st.unresolved, nil
 }
 
-// restoreContent restores the text-carrying blocks of an answer's content array. A block
-// of a type this build does not know is left whole, so a future block type reaches the
-// client untouched rather than mangled — the same choice the request walker makes.
-func (s *Server) restoreContent(ctx context.Context, e Engine, v any, st *restoreState) error {
-	blocks, _ := v.([]any)
+// restoreContent restores an answer's content. The Messages API defines it as an array of
+// blocks, and a block of a type this build does not know is left whole, so a future block type
+// reaches the client untouched rather than mangled — the same choice the request walker makes.
+// A bare string is accepted as well: it is a form the request walker already understands, so a
+// gateway that answers with one must not reach the client with a raw token in it.
+func (s *Server) restoreContent(ctx context.Context, e Engine, doc map[string]any, st *restoreState) error {
+	if text, ok := doc["content"].(string); ok {
+		out, err := s.restoreText(ctx, e, text, st)
+		if err != nil {
+			return err
+		}
+		doc["content"] = out
+		st.changed = st.changed || out != text
+		return nil
+	}
+	blocks, _ := doc["content"].([]any)
 	for _, b := range blocks {
 		if err := s.restoreBlock(ctx, e, b, st); err != nil {
 			return err

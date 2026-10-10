@@ -93,16 +93,16 @@ type fakeEngine struct {
 	restoreFn   func(string) (core.Result, error)
 	restoreErr  error
 	closed      bool
-	proxyCovers func(context.Context) (bool, error)
+	proxyCovers func(context.Context, string) (bool, error)
 }
 
 func (f *fakeEngine) Anonymize(_ context.Context, text string) (core.Result, error) {
 	return core.Result{Text: text}, nil
 }
 
-func (f *fakeEngine) ProxyCovers(ctx context.Context) (bool, error) {
+func (f *fakeEngine) ProxyCovers(ctx context.Context, upstreamURL string) (bool, error) {
 	if f.proxyCovers != nil {
-		return f.proxyCovers(ctx)
+		return f.proxyCovers(ctx, upstreamURL)
 	}
 	return false, nil
 }

@@ -82,7 +82,8 @@ func TestUserPromptSubmitGateOffIsSilent(t *testing.T) {
 const promptWithSecrets = "ssh alice@db.example.com"
 
 // coverProject writes a fresh, live marker for root into the home's store: the gate reads
-// it through the real engine the handler opens on the same home.
+// it through the real engine the handler opens on the same home. The session is pointed at
+// the port the marker names, which is the other half of the question the gate asks.
 func coverProject(t *testing.T, home, root string) {
 	t.Helper()
 	st := openStore(t, home)
@@ -91,6 +92,7 @@ func coverProject(t *testing.T, home, root string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:8787")
 }
 
 // auto with no marker is the fail-safe default: nothing anonymizes the traffic, so the
@@ -146,6 +148,36 @@ func TestAutoBlocksForAProxyOfAnotherProject(t *testing.T) {
 	}
 }
 
+// A live proxy for this project is not enough: the gate asks whether *this* session's
+// traffic goes through it, and the second terminal of the scenario never exported the base
+// URL. Its prompts reach the provider in the clear, which is exactly what auto exists to
+// stop — so every address but the one the marker serves on must leave the gate blocking,
+// including an unset variable and a third-party router that took it.
+func TestAutoBlocksWhenTheSessionDoesNotPointAtTheProxy(t *testing.T) {
+	for _, base := range []string{
+		"",                           // a terminal opened without the export
+		"http://127.0.0.1:9999",      // another proxy, another port
+		"https://router.example.com", // a third-party router holding the variable
+	} {
+		t.Run(base, func(t *testing.T) {
+			home, repo := t.TempDir(), gitDir(t)
+			writeConfig(t, repo, ".shade.toml", "prompt_gate = \"auto\"\n")
+			coverProject(t, home, repo)
+			t.Setenv("ANTHROPIC_BASE_URL", base)
+			h := newHandler(t, home)
+			res, err := h.Handle(ctx, hook.Event{
+				Name: hook.EventUserPromptSubmit, CWD: repo, Prompt: promptWithSecrets,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Decision != "block" {
+				t.Fatalf("ANTHROPIC_BASE_URL=%q with a live proxy must still block: %+v", base, res)
+			}
+		})
+	}
+}
+
 // The explicit modes ignore the marker: off stays quiet with or without a live proxy, on
 // blocks with or without one.
 func TestOffAndOnIgnoreTheMarker(t *testing.T) {
@@ -185,7 +217,7 @@ func TestOffAndOnIgnoreTheMarker(t *testing.T) {
 func TestOffAndOnDoNotAskForTheProxy(t *testing.T) {
 	for _, gate := range []string{"off", "on"} {
 		t.Run(gate, func(t *testing.T) {
-			e := &fakeEngine{proxyCovers: func(context.Context) (bool, error) {
+			e := &fakeEngine{proxyCovers: func(context.Context, string) (bool, error) {
 				return false, errors.New("the store is gone")
 			}}
 			e.root = t.TempDir()
@@ -207,7 +239,7 @@ func TestOffAndOnDoNotAskForTheProxy(t *testing.T) {
 // A ProxyCovers failure under auto is fail-open: the prompt is not blocked, and the error
 // surfaces as a systemMessage exactly as a failed config.Load does.
 func TestAutoFailsOpenWhenTheProxyCheckFails(t *testing.T) {
-	e := &fakeEngine{proxyCovers: func(context.Context) (bool, error) {
+	e := &fakeEngine{proxyCovers: func(context.Context, string) (bool, error) {
 		return false, errors.New("the store is gone")
 	}}
 	e.root = t.TempDir()

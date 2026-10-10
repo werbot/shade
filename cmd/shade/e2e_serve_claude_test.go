@@ -42,7 +42,9 @@ func TestServeWrapsARealClaudeCodeSession(t *testing.T) {
 	}
 
 	// The session is bounded: a stalled claude must fail the test rather than block it —
-	// and with it the deferred cleanup of the serve process the fixture started.
+	// and with it the deferred cleanup of the serve process the fixture started. WaitDelay
+	// bounds the wait after the kill signal too: a grandchild of claude that inherited its
+	// stdout keeps the pipe open, and Run would then wait for one that is never closed.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	session := exec.CommandContext(ctx, claude, "-p", "Note the ssh target: "+e2eServeLiteral,
@@ -50,6 +52,7 @@ func TestServeWrapsARealClaudeCodeSession(t *testing.T) {
 		"--permission-mode", "acceptEdits",
 		"--output-format", "stream-json", "--verbose")
 	session.Dir = f.dir
+	session.WaitDelay = 30 * time.Second
 	var stdout, stderr bytes.Buffer
 	session.Stdout, session.Stderr = &stdout, &stderr
 	if err := session.Run(); err != nil {

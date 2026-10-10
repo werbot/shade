@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,17 +32,15 @@ var hopByHopHeaders = []string{
 // /anthropic-aws — and the client's own path is appended to it. The query is carried over
 // unchanged. Headers are copied as they are, minus the hop-by-hop set and Host and
 // Content-Length. api_key_env, when the named variable is set and non-empty, replaces the
-// client's own credential, so a subscription session is not overwritten when it is empty.
+// client's own credential, so a subscription session is not overwritten when it is empty;
+// the swap is reported on diag, because it moves the session onto another billing without
+// breaking anything the user would see.
 //
 // Whether the answer is a stream is not decided here: that is the media type of the
 // response, which does not exist until the caller has sent the request. The caller reads
 // it from the response — the request's own media type is application/json for every
 // endpoint this proxy serves.
-func (s *Server) upstreamRequest(ctx context.Context, r *http.Request, body []byte) (*http.Request, error) {
-	cfg, err := config.Load(s.opts.Home, s.opts.Project)
-	if err != nil {
-		return nil, err
-	}
+func (s *Server) upstreamRequest(ctx context.Context, r *http.Request, body []byte, cfg config.Config) (*http.Request, error) {
 	target, err := url.Parse(cfg.Upstream)
 	if err != nil {
 		return nil, err
@@ -62,6 +61,12 @@ func (s *Server) upstreamRequest(ctx context.Context, r *http.Request, body []by
 
 	if env := cfg.APIKeyEnv; env != "" {
 		if key := os.Getenv(env); key != "" {
+			if req.Header.Get("Authorization") != "" {
+				// The session is not failing and nothing looks different to the user — so
+				// the one thing that did change is named here: which credential rides on
+				// the request now, and that the client's own was dropped.
+				fmt.Fprintf(s.opts.Diag, "proxy: %s replaced the client's Authorization with X-Api-Key\n", env)
+			}
 			req.Header.Del("Authorization")
 			req.Header.Set("X-Api-Key", key)
 		}

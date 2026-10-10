@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,7 +9,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/werbot/shade/internal/jsonwalk"
+	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/placeholder"
 )
 
@@ -33,8 +32,9 @@ var errRefused = errors.New("proxy: stream refused")
 // The flusher and the accumulators are local to this call: two requests never share them. dst
 // is flushed after every frame, so ping reaches the client at once and an idle watchdog never
 // ends the session. A stream that ends without message_stop is not silent: the held tail is
-// dropped (a raw token must never reach the client) and the loss is reported on diag.
-func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, mode string, src io.Reader, dst streamDst) error {
+// dropped (a raw token must never reach the client) and the loss is reported on diag, and the
+// caller is told the stream broke so it can say so to the client in the protocol's own frame.
+func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, cfg config.Config, src io.Reader, dst streamDst) error {
 	br := bufio.NewReader(src)
 	fl := placeholder.NewFlusher()
 	// tools maps a tool_use block's index to the partial_json accumulated for it. A nil
@@ -42,7 +42,7 @@ func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, mode string, sr
 	tools := make(map[json.Number][]byte)
 	// bs is non-nil only in buffered mode, where text is collected per block and restored as
 	// one piece at the block's stop.
-	bs := s.newBufferedState(mode)
+	bs := newBufferedState(cfg)
 
 	for {
 		frame, err := readFrame(br)
@@ -54,10 +54,7 @@ func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, mode string, sr
 				fmt.Fprintf(s.opts.Diag, "proxy: %d bytes withheld at stream end\n", withheld)
 			}
 			fmt.Fprintf(s.opts.Diag, "proxy: stream ended early: %v\n", err)
-			if err == io.EOF {
-				return io.ErrUnexpectedEOF
-			}
-			return err
+			return errStreamBroken
 		}
 		if err := s.handleSSEFrame(ctx, e, fl, tools, bs, frame, dst); err != nil {
 			// A refusal is not a broken stream: the error frame is already out and the answer
@@ -77,13 +74,13 @@ func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, mode string, sr
 }
 
 // handleSSEFrame dispatches one event. Events the pipe does not rewrite — ping, message_start,
-// message_delta, content_block_start, an unknown event — go on byte-for-byte. bs is the
-// buffered-mode state, nil in incremental mode.
+// message_delta, an unknown event — go on byte-for-byte; a content_block_start goes on whole
+// unless it carries text of its own. bs is the buffered-mode state, nil in incremental mode.
 func (s *Server) handleSSEFrame(ctx context.Context, e Engine, fl *placeholder.Flusher, tools map[json.Number][]byte, bs *bufferedState, frame sseFrame, dst streamDst) error {
 	switch frame.event {
 	case "content_block_start":
 		s.startToolBlock(frame, tools)
-		return writeRaw(dst, frame.raw)
+		return s.startTextBlock(ctx, e, fl, bs, frame, dst)
 	case "content_block_delta":
 		return s.handleBlockDelta(ctx, e, fl, tools, bs, frame, dst)
 	case "content_block_stop":
@@ -125,22 +122,6 @@ func (s *Server) handleSSEFrame(ctx context.Context, e Engine, fl *placeholder.F
 	}
 }
 
-// startToolBlock records the index of a tool_use block so its arguments can be buffered. A
-// text or unknown block needs no accumulator and is forwarded by the caller.
-func (s *Server) startToolBlock(frame sseFrame, tools map[json.Number][]byte) {
-	data, ok := parseFrameData(frame)
-	if !ok {
-		return
-	}
-	block, _ := data["content_block"].(map[string]any)
-	if typ, _ := block["type"].(string); typ != "tool_use" {
-		return
-	}
-	if idx, ok := data["index"].(json.Number); ok {
-		tools[idx] = nil
-	}
-}
-
 // handleBlockDelta routes a content_block_delta by its delta type. thinking_delta and
 // signature_delta are forwarded untouched: rewriting either invalidates the signature.
 func (s *Server) handleBlockDelta(ctx context.Context, e Engine, fl *placeholder.Flusher, tools map[json.Number][]byte, bs *bufferedState, frame sseFrame, dst streamDst) error {
@@ -165,6 +146,46 @@ func (s *Server) handleBlockDelta(ctx context.Context, e Engine, fl *placeholder
 	}
 }
 
+// startTextBlock relays the text a content_block_start may already carry. The Messages API
+// opens a block with an empty string, so only a non-standard upstream sends text here — and a
+// raw token in it would reach the client exactly as a token in a text_delta would. It goes
+// through the same two paths: buffered mode adds it to the block's buffer, so the whole block
+// is restored — and may be refused — at its stop, and incremental mode runs it through the
+// flusher, so a placeholder that continues in the deltas after it is still restored whole.
+func (s *Server) startTextBlock(ctx context.Context, e Engine, fl *placeholder.Flusher, bs *bufferedState, frame sseFrame, dst streamDst) error {
+	data, ok := parseFrameData(frame)
+	if !ok {
+		return writeRaw(dst, frame.raw)
+	}
+	block, _ := data["content_block"].(map[string]any)
+	if typ, _ := block["type"].(string); typ != "text" {
+		return writeRaw(dst, frame.raw)
+	}
+	text, _ := block["text"].(string)
+	if text == "" {
+		return writeRaw(dst, frame.raw)
+	}
+	if bs != nil {
+		// Buffered mode: the text joins the block's buffer, so the whole block is restored —
+		// and may be refused — at its stop. The frame itself goes out with an empty text, as
+		// the API defines it: this one is the exception where the frame cannot simply be
+		// dropped, so the raw text must be taken out of it rather than left to ride along.
+		accumulateTextDelta(data, block, bs.byIndex)
+		block["text"] = ""
+	} else {
+		block["text"] = s.restoreStream(ctx, e, fl.Write(text))
+	}
+	// The frame goes out either way — the client needs the block it opens — but with only the
+	// text that may leave now, so an unclosed "<" is held here rather than leaked.
+	body, err := marshalNoEscape(data)
+	if err != nil {
+		// Unreachable for a document the decoder built from JSON, and the fallback the other
+		// rewriters in this package use.
+		return writeRaw(dst, frame.raw)
+	}
+	return writeEvent(dst, frame.event, body)
+}
+
 // handleTextDelta runs the piece through the flusher and restores whatever is safe to emit.
 // An empty result means the piece is held for a possible placeholder, and no frame is sent:
 // an empty text_delta would only be noise.
@@ -174,17 +195,7 @@ func (s *Server) handleTextDelta(ctx context.Context, e Engine, fl *placeholder.
 	if out == "" {
 		return nil
 	}
-	res, err := e.Restore(ctx, out)
-	restored := out
-	if err != nil {
-		// Incremental streaming cannot fail closed (spec §7): the bytes are already on their
-		// way, so they go on as they came and the failure is only reported.
-		fmt.Fprintf(s.opts.Diag, "proxy: restore failed: %v\n", err)
-	} else {
-		s.reportRecordErr(res.RecordErr)
-		restored = res.Text
-	}
-	delta["text"] = restored
+	delta["text"] = s.restoreStream(ctx, e, out)
 	body, err := marshalNoEscape(data)
 	if err != nil {
 		return writeRaw(dst, frame.raw)
@@ -192,83 +203,17 @@ func (s *Server) handleTextDelta(ctx context.Context, e Engine, fl *placeholder.
 	return writeEvent(dst, frame.event, body)
 }
 
-// accumulateToolDelta appends a partial_json fragment to the block's buffer. The frames are
-// never forwarded: the arguments are only safe once the whole JSON is parsed and restored.
-func (s *Server) accumulateToolDelta(data, delta map[string]any, tools map[json.Number][]byte) {
-	idx, ok := data["index"].(json.Number)
-	if !ok {
-		return
-	}
-	partial, _ := delta["partial_json"].(string)
-	tools[idx] = append(tools[idx], partial...)
-}
-
-// finishToolBlock emits one input_json_delta with the restored arguments, immediately before
-// the content_block_stop. Nothing is emitted for a block that buffered no arguments.
-func (s *Server) finishToolBlock(ctx context.Context, e Engine, tools map[json.Number][]byte, frame sseFrame, dst streamDst) error {
-	data, ok := parseFrameData(frame)
-	if !ok {
-		return nil
-	}
-	idx, ok := data["index"].(json.Number)
-	if !ok {
-		return nil
-	}
-	partial, ok := tools[idx]
-	if !ok {
-		return nil
-	}
-	delete(tools, idx)
-	if len(partial) == 0 {
-		// The block carried no arguments: its input is already the start frame's {}.
-		return nil
-	}
-	out := map[string]any{
-		"type":  "content_block_delta",
-		"index": idx,
-		"delta": map[string]any{"type": "input_json_delta", "partial_json": s.restoreToolArgs(ctx, e, partial)},
-	}
-	body, err := marshalNoEscape(out)
+// restoreStream restores a piece of text already on its way to the client. Incremental
+// streaming cannot fail closed (spec §7): the bytes cannot be taken back, so an engine failure
+// lets them go on as they came and is only reported.
+func (s *Server) restoreStream(ctx context.Context, e Engine, out string) string {
+	res, err := e.Restore(ctx, out)
 	if err != nil {
-		return nil
+		fmt.Fprintf(s.opts.Diag, "proxy: restore failed: %v\n", err)
+		return out
 	}
-	return writeEvent(dst, "content_block_delta", body)
-}
-
-// restoreToolArgs parses the accumulated arguments and restores every string inside, which
-// is the only way an escaped token such as <HOST_1> is seen: a text edit of
-// partial_json would miss it (Review Focus 3). Arguments that do not parse still go on as
-// they arrived rather than being dropped, and the failure is reported without its text — a
-// parse error can quote a character of a value.
-func (s *Server) restoreToolArgs(ctx context.Context, e Engine, partial []byte) string {
-	dec := json.NewDecoder(bytes.NewReader(partial))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		fmt.Fprintf(s.opts.Diag, "proxy: tool arguments could not be restored\n")
-		return string(partial)
-	}
-	var failed error
-	out, _ := jsonwalk.RewriteValue(v, func(str string) (string, bool) {
-		if failed != nil {
-			return str, false
-		}
-		res, err := e.Restore(ctx, str)
-		if err != nil {
-			failed = err
-			return str, false
-		}
-		s.reportRecordErr(res.RecordErr)
-		return res.Text, res.Text != str
-	})
-	if failed != nil {
-		fmt.Fprintf(s.opts.Diag, "proxy: restore failed: %v\n", failed)
-	}
-	body, err := marshalNoEscape(out)
-	if err != nil {
-		return string(partial)
-	}
-	return string(body)
+	s.reportRecordErr(res.RecordErr)
+	return res.Text
 }
 
 // handleErrorEvent anonymizes the provider's message so a value in it cannot travel, while

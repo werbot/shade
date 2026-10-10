@@ -17,17 +17,13 @@ type bufferedState struct {
 }
 
 // newBufferedState returns the buffered-mode state for a stream, or nil for incremental mode.
-// The fail policy is read here, the same read the non-streaming answer makes (server.go): a
-// config that cannot be read leaves the empty policy, which fails closed.
-func (s *Server) newBufferedState(mode string) *bufferedState {
-	if mode != config.StreamBuffered {
+// The fail policy is the one the caller read for the whole request — the same read the
+// non-streaming answer makes (server.go), so the two arms cannot drift.
+func newBufferedState(cfg config.Config) *bufferedState {
+	if cfg.StreamMode != config.StreamBuffered {
 		return nil
 	}
-	bs := &bufferedState{byIndex: make(map[json.Number][]byte)}
-	if cfg, err := config.Load(s.opts.Home, s.opts.Project); err == nil {
-		bs.policy = cfg.FailPolicy
-	}
-	return bs
+	return &bufferedState{policy: cfg.FailPolicy, byIndex: make(map[json.Number][]byte)}
 }
 
 // withheld is the number of bytes collected but never emitted, for the diagnostic line when a

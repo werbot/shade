@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -166,6 +167,42 @@ func TestRestoreNonStreamingResponse(t *testing.T) {
 	}
 }
 
+// TestRestoreNonStreamingStringContent pins the form the request walker already understands: a
+// non-standard upstream answering `content` as a bare string. The old walker took []any only,
+// so the token passed straight through to the client — and, under fail_closed, silently: no
+// refusal, because nothing had been resolved.
+func TestRestoreNonStreamingStringContent(t *testing.T) {
+	const value, token = "db.prod.local", "<HOST_1>"
+	answer := []byte(`{"id":"msg_1","content":"ssh ` + token + `"}`)
+
+	t.Run("the value reaches the client", func(t *testing.T) {
+		s := answerUpstream(t, http.StatusOK, answer, &answerEngine{replace: [][2]string{{token, value}}}, nil, "")
+		rec := postMessages(s)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if got := decodeJSON(t, rec.Body.Bytes())["content"]; got != "ssh "+value {
+			t.Errorf("content = %v, want the value put back", got)
+		}
+	})
+
+	t.Run("an unresolved token refuses under fail_closed", func(t *testing.T) {
+		eng := &answerEngine{unresolved: []placeholder.Token{{Type: "HOST", Raw: token}}}
+		rec := postMessages(answerUpstream(t, http.StatusOK, answer, eng, nil, ""))
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+		}
+		if got := rec.Body.String(); strings.Contains(got, token) {
+			t.Errorf("the refusal leaked the token: %q", got)
+		}
+		if got := eng.blockedTypes(); !slices.Equal(got, []string{"HOST"}) {
+			t.Errorf("blocked types = %v, want one HOST row", got)
+		}
+	})
+}
+
+// TestRestoreNonStreamingToolUseInput — the tool_use arguments of a non-streaming answer,
+// at any depth and beside a number that must not change shape.
 func TestRestoreNonStreamingToolUseInput(t *testing.T) {
 	const value = "db.prod.local"
 	body := []byte(`{"content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{` +
@@ -371,6 +408,46 @@ func TestNonJSONAnswerIsPassedThroughUnmodified(t *testing.T) {
 	}
 	if eng.saw("<HOST_1>") {
 		t.Error("a stream must not be routed through the engine before the streaming task lands")
+	}
+}
+
+// TestNonJSONAnswerIsReportedOnDiag pins the silent part of that branch: the answer is handed
+// on as it arrived, tokens and all, so under fail_closed — where the policy promises a refusal
+// for a token that cannot be restored — the line saying the body was never walked is the only
+// trace that no refusal was ever considered. It names the media type and the length, never the
+// body.
+func TestNonJSONAnswerIsReportedOnDiag(t *testing.T) {
+	const value = "db.prod.local"
+	page := []byte("your host <HOST_1> is unavailable")
+	up := &capturingUpstream{
+		status: http.StatusOK,
+		header: http.Header{"Content-Type": {"text/plain; charset=utf-8"}},
+		body:   page,
+	}
+	ts := httptest.NewServer(up)
+	t.Cleanup(ts.Close)
+	var diag bytes.Buffer
+	eng := &answerEngine{replace: [][2]string{{"<HOST_1>", value}}}
+	s := answerServer(t, ts.URL, eng, &diag, "")
+
+	rec := postMessages(s)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	line := diag.String()
+	if !strings.Contains(line, "not a json object") || !strings.Contains(line, "text/plain") {
+		t.Errorf("diag = %q, want the media type named", line)
+	}
+	if !strings.Contains(line, strconv.Itoa(len(page))) {
+		t.Errorf("diag = %q, want the body length named", line)
+	}
+	if strings.Contains(line, value) || strings.Contains(line, "<HOST_1>") {
+		t.Errorf("diag = %q, must carry neither the value nor a token", line)
+	}
+	// The answer itself is still the upstream's: the upstream saw only tokens, so no value can
+	// be in there, and the client may need the wording.
+	if got := rec.Body.String(); got != string(page) {
+		t.Errorf("body = %q, want the answer passed through unchanged", got)
 	}
 }
 

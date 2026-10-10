@@ -9,16 +9,18 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/core"
 )
 
 // fakeEngine is the Engine stand-in: the router and the client must be testable without
 // a database, so the engine does nothing here. Its methods hand the text back unchanged;
 // the tasks that anonymize and restore replace it with an engine that rewrites text.
-type fakeEngine struct{ root string }
+type fakeEngine struct{}
 
 func (f *fakeEngine) Anonymize(_ context.Context, text string) (core.Result, error) {
 	return core.Result{Text: text}, nil
@@ -30,9 +32,18 @@ func (f *fakeEngine) Restore(_ context.Context, text string) (core.Result, error
 
 func (f *fakeEngine) RecordBlocked(context.Context, string) error { return nil }
 
-func (f *fakeEngine) RootPath() string { return f.root }
-
 func (f *fakeEngine) Close() error { return nil }
+
+// testConfig is the config the server's own home carries: upstreamRequest takes it as an
+// argument now, so a test that drives it directly reads it the way forward does.
+func (s *Server) testConfig(t *testing.T) config.Config {
+	t.Helper()
+	cfg, err := config.Load(s.opts.Home, s.opts.Project)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	return cfg
+}
 
 // recordingUpstream is an httptest upstream that keeps what actually arrived. The router
 // and the client are judged on the request the upstream received, not on the one the
@@ -62,17 +73,23 @@ func (u *recordingUpstream) snapshot() recordingUpstream {
 }
 
 // newTestServer assembles a proxy whose config lives in a temporary home. configBody is
-// the whole file: a test sets upstream and api_key_env here, because upstreamRequest reads
-// them from config.Load on every request.
+// the whole file: a test sets upstream and api_key_env here, because the handler reads them
+// from the config it loads once per request.
 func newTestServer(t *testing.T, configBody string) *Server {
+	t.Helper()
+	return newTestServerWithDiag(t, configBody, io.Discard)
+}
+
+// newTestServerWithDiag is newTestServer with the diagnostic writer the test asserts on.
+func newTestServerWithDiag(t *testing.T, configBody string, diag io.Writer) *Server {
 	t.Helper()
 	home := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(configBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	srv, err := NewServer(
-		Options{Home: home, Project: t.TempDir(), Diag: io.Discard},
-		func(context.Context) (Engine, error) { return &fakeEngine{root: home}, nil },
+		Options{Home: home, Project: t.TempDir(), Diag: diag},
+		func(context.Context) (Engine, error) { return &fakeEngine{}, nil },
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +102,7 @@ func newTestServer(t *testing.T, configBody string) *Server {
 // later tasks add.
 func forward(t *testing.T, s *Server, up *recordingUpstream, in *http.Request, body []byte) recordingUpstream {
 	t.Helper()
-	req, err := s.upstreamRequest(t.Context(), in, body)
+	req, err := s.upstreamRequest(t.Context(), in, body, s.testConfig(t))
 	if err != nil {
 		t.Fatalf("upstreamRequest: %v", err)
 	}
@@ -189,6 +206,50 @@ func TestAPIKeyEnvOverridesTheClientCredential(t *testing.T) {
 	}
 }
 
+// TestAPIKeyEnvSwapIsReported pins the silent one: api_key_env is not empty by default, so a
+// session on a subscription that happens to have the variable exported — left over from another
+// tool — has its Authorization dropped and its X-Api-Key replaced. Nothing fails and nothing
+// looks different, so the line that names the swap is the only trace of the credential change,
+// and it must name the variable only: the value and the client's header never go to diag.
+func TestAPIKeyEnvSwapIsReported(t *testing.T) {
+	t.Setenv("SHADE_TEST_KEY", "sk-from-env")
+	up := &recordingUpstream{}
+	hs := httptest.NewServer(up)
+	t.Cleanup(hs.Close)
+
+	for _, tc := range []struct {
+		name   string
+		client bool // the client sends its own Authorization
+		want   bool
+	}{
+		{"a subscription session whose credential was replaced", true, true},
+		{"a session that never sent Authorization", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var diag bytes.Buffer
+			s := newTestServerWithDiag(t, fmt.Sprintf("upstream = %q\napi_key_env = \"SHADE_TEST_KEY\"\n", hs.URL), &diag)
+			in := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			if tc.client {
+				in.Header.Set("Authorization", "Bearer subscription-token")
+			}
+			forward(t, s, up, in, []byte(`{}`))
+			line := diag.String()
+			if tc.want {
+				if !strings.Contains(line, "SHADE_TEST_KEY") || !strings.Contains(line, "Authorization") {
+					t.Errorf("diag = %q, want the credential swap named", line)
+				}
+			} else if line != "" {
+				t.Errorf("diag = %q, want nothing: there was no credential to replace", line)
+			}
+			for _, secret := range []string{"sk-from-env", "subscription-token"} {
+				if strings.Contains(line, secret) {
+					t.Errorf("diag = %q, must carry no credential (%q)", line, secret)
+				}
+			}
+		})
+	}
+}
+
 func TestVersionAndBetaHeadersAreForwarded(t *testing.T) {
 	up, s := upstreamServer(t, "", "")
 	in := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
@@ -217,7 +278,7 @@ func TestHopByHopHeadersAreNotForwarded(t *testing.T) {
 	if in.Header.Get("Transfer-Encoding") != "chunked" {
 		t.Fatalf("incoming Transfer-Encoding = %q, want it set, so the check means something", in.Header.Get("Transfer-Encoding"))
 	}
-	req, err := s.upstreamRequest(t.Context(), in, []byte(`{}`))
+	req, err := s.upstreamRequest(t.Context(), in, []byte(`{}`), s.testConfig(t))
 	if err != nil {
 		t.Fatalf("upstreamRequest: %v", err)
 	}
@@ -262,7 +323,7 @@ func TestUpstreamRedirectIsNotFollowed(t *testing.T) {
 	in.Header.Set("Authorization", "Bearer subscription-token")
 	in.Header.Set("X-Api-Key", "client-key")
 
-	req, err := s.upstreamRequest(t.Context(), in, []byte(`{}`))
+	req, err := s.upstreamRequest(t.Context(), in, []byte(`{}`), s.testConfig(t))
 	if err != nil {
 		t.Fatalf("upstreamRequest: %v", err)
 	}
