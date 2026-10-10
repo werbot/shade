@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/core"
 )
 
@@ -101,8 +102,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMessages serves the Anthropic Messages endpoint. The body is anonymized and the
-// directive injected before it goes out; the upstream's answer is handed back as it
-// arrived. Restoration of the answer and the streaming pipe arrive with the later tasks.
+// directive injected before it goes out; the answer is handed back with the real values put
+// in, and an event stream is still passed on whole until the streaming pipe lands.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	s.forwardAnthropic(w, r)
 }
@@ -115,9 +116,15 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 // forwardAnthropic is what both Anthropic handlers do: read the body, anonymize it with the
-// directive injected, send it upstream and pass the answer back unmodified. A body that
-// cannot be anonymized is refused with a 502 that names no client text (spec §11) and never
-// reaches the upstream.
+// directive injected, send it upstream and hand the answer back with the real values put
+// in. A body that cannot be anonymized is refused with a 502 that names no client text
+// (spec §11) and never reaches the upstream.
+//
+// A non-success status is sanitized: its body is anonymized rather than cut, so the wording
+// a client retries on survives while no value travels in it. A success is a JSON answer
+// whose values are restored; an answer that does not parse — an event stream, which the
+// later streaming task owns, or a gateway's own page — is handed on unmodified rather than
+// mangled or refused.
 func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -150,43 +157,59 @@ func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	for k, vs := range resp.Header {
+	if resp.StatusCode >= 300 {
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			writeShadeError(w, "upstream answer could not be read")
+			return
+		}
+		writeUpstreamAnswer(w, resp, s.sanitizeError(ctx, eng, resp.StatusCode, raw))
+		return
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		writeShadeError(w, "upstream answer could not be read")
+		return
+	}
+	restored, unresolved, err := s.restoreAnthropic(ctx, eng, raw)
+	if err != nil {
+		writeUpstreamAnswer(w, resp, raw)
+		return
+	}
+	// The policy is read here rather than carried from upstreamRequest, which loads the
+	// same config: a config that cannot be read here could not have been read there either,
+	// so the request would have failed before an answer arrived. A second read only fails on
+	// a race with an edit on disk, and then an empty policy fails closed, which is safe.
+	var policy string
+	if cfg, err := config.Load(s.opts.Home, s.opts.Project); err == nil {
+		policy = cfg.FailPolicy
+	}
+	if blocked, reason := s.refuseUnresolved(ctx, eng, policy, unresolved); blocked {
+		writeErrorBody(w, reason)
+		return
+	}
+	writeUpstreamAnswer(w, resp, restored)
+}
+
+// writeUpstreamAnswer hands the upstream's status and headers to the client along with body.
+func writeUpstreamAnswer(w http.ResponseWriter, resp *http.Response, body []byte) {
+	copyResponseHeaders(w, resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(body)
+}
+
+// copyResponseHeaders copies the upstream's headers. Content-Length is left out: every arm
+// rewrites the body, so the upstream's length no longer describes what is written and a
+// stale one would truncate the answer on a real server.
+func copyResponseHeaders(w http.ResponseWriter, h http.Header) {
+	for k, vs := range h {
+		if http.CanonicalHeaderKey(k) == "Content-Length" {
+			continue
+		}
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-}
-
-// apiError is the refusal body. The shape follows the Anthropic error object so a client
-// reads it the same way, but the type is shade's own: the request never reached the
-// provider.
-type apiError struct {
-	Type  string       `json:"type"`
-	Error apiErrorBody `json:"error"`
-}
-
-// apiErrorBody is the "error" member of an apiError.
-type apiErrorBody struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
-
-// writeShadeError refuses the request with a fixed message. It names no client text —
-// never a value, never a parse offset — because a refusal that quotes the body it refused
-// is a leak (spec §11).
-func writeShadeError(w http.ResponseWriter, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadGateway)
-	body, err := marshalNoEscape(apiError{
-		Type:  "error",
-		Error: apiErrorBody{Type: "shade_error", Message: message},
-	})
-	if err != nil {
-		return
-	}
-	_, _ = w.Write(body)
 }
 
 // handleChatCompletions serves the OpenAI Chat Completions endpoint.
