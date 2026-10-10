@@ -203,3 +203,26 @@ func TestOffAndOnDoNotAskForTheProxy(t *testing.T) {
 		})
 	}
 }
+
+// A ProxyCovers failure under auto is fail-open: the prompt is not blocked, and the error
+// surfaces as a systemMessage exactly as a failed config.Load does.
+func TestAutoFailsOpenWhenTheProxyCheckFails(t *testing.T) {
+	e := &fakeEngine{proxyCovers: func(context.Context) (bool, error) {
+		return false, errors.New("the store is gone")
+	}}
+	e.root = t.TempDir()
+	writeConfig(t, e.root, ".shade.toml", "prompt_gate = \"auto\"\n")
+	h := newFakeHandler(t, e)
+	res, err := h.Handle(ctx, hook.Event{
+		Name: hook.EventUserPromptSubmit, CWD: e.root, Prompt: promptWithSecrets,
+	})
+	if err != nil {
+		t.Fatalf("a runtime failure must not come back as an error: %v", err)
+	}
+	if res.Decision != "" {
+		t.Fatalf("a failed proxy check must not block the prompt: %+v", res)
+	}
+	if !strings.Contains(res.SystemMessage, "shade:") || !strings.Contains(res.SystemMessage, "the store is gone") {
+		t.Fatalf("the failure must be visible as a warning: %+v", res)
+	}
+}
