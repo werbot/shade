@@ -26,6 +26,7 @@ phone: +1 415 555 0132
 - [Why](#-why)
 - [How it works](#-how-it-works)
 - [Claude Code](#-claude-code)
+- [Proxy](#-proxy)
 - [MCP](#-mcp)
 - [Architecture](#-architecture)
 - [Install](#-install)
@@ -174,6 +175,41 @@ Two limits are worth knowing before you rely on it:
 - **Tool arguments are restored optimistically.** The model writes those arguments, so a
   token it mangled is still matched; the other direction — tool output, which the
   outside world writes — is only ever anonymized.
+
+## 🛰️ Proxy
+
+A hook cannot rewrite the prompt or the system prompt, so `shade serve` closes that gap:
+it is a local HTTP proxy that anonymizes the whole request on the way out and puts the real
+values back in the answer, frame by frame. Point Claude Code at it with the one line the
+command prints:
+
+```
+$ shade serve
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+```
+
+```
+$ export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+$ claude
+```
+
+It listens on `127.0.0.1` only (default port 8787, `--port N` to change it, `--port 0` to
+let the OS choose) and serves the Anthropic Messages shape (`/v1/messages`,
+`/v1/messages/count_tokens`) and the OpenAI Chat Completions shape
+(`/v1/chat/completions`). One project per process: the project is resolved once, at
+startup, from `--project DIR` or the working directory — start a second `serve` for a
+second repository. While it runs, it publishes a liveness marker so the `UserPromptSubmit`
+gate can tell that this project's traffic is already anonymized.
+
+`upstream` and `api_key_env` decide where the traffic goes and whose credential rides on
+it. With `api_key_env` empty the client's own credentials are forwarded untouched, so a
+subscription session keeps working.
+
+`stream_mode` decides how a streamed answer is relayed. `incremental` — the default —
+restores and sends each text delta as it arrives, which is what Claude Code expects.
+`buffered` collects a whole text block and restores it at its stop, so an unresolved token
+can refuse the answer before it reaches the client; it is for non-interactive clients and
+is **not** the behaviour Claude Code expects.
 
 ## 🔌 MCP
 
@@ -365,6 +401,10 @@ errors are not an exception: `shade hook` with a stray argument still exits `2`.
 is an `isError` tool result, not an exit code — the server stays up and answers
 the next call.
 
+`shade serve` is the third exception: it has no code `3` either. It streams an
+answer or sanitizes an error, and under `fail_closed` a restore it cannot complete
+becomes a `502` the client can retry, never a process exit.
+
 An auxiliary write failure never changes the code: if the hit counter or the
 journal cannot be written, the result is still delivered and the failure is
 reported on stderr. A ready prompt or answer is worth more than a statistics row.
@@ -535,8 +575,9 @@ from the standard library.
 
 ## 📌 Status
 
-Phases 1–3 are complete — the core and the CLI, the Claude Code hook adapter, then the
-MCP adapter and the skills. The rest is ahead of us; the code is already sliced for it.
+Phases 1–4 are complete — the core and the CLI, the Claude Code hook adapter, the MCP
+adapter and the skills, then the HTTP proxy that wraps Claude Code end to end. The rest is
+ahead of us; the code is already sliced for it.
 
 - [x] Core engine — `Anonymize`, `Restore`, `Scan`
 - [x] Rule engine — keyword prefilter, entropy threshold, validators, span merging
@@ -546,8 +587,9 @@ MCP adapter and the skills. The rest is ahead of us; the code is already sliced 
 - [x] CLI — `anon`, `deanon`, `hook`, `init`, `mcp`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
 - [x] Claude Code hooks — `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `MessageDisplay`, installed by `shade init`, which records `hook` as the adapter in the journal
 - [x] Skills — `shade` and `shade-rules`, installed into the plugin by `shade init`
-- [x] MCP adapter — `shade mcp` serves six tools and the `shade://directive` resource over stdio; the proxy half of this item is phase 4
+- [x] MCP adapter — `shade mcp` serves six tools and the `shade://directive` resource over stdio
 - [x] MCP `scan` tool — reports the types and the rules that found them, never the fragment or the offset
+- [x] Proxy adapter — `shade serve` wraps Claude Code through `ANTHROPIC_BASE_URL`, anonymizing the whole request and restoring the streamed answer, with the `prompt_gate = "auto"` liveness marker
 - [ ] Rule packages — the `packages` table exists; nothing writes to it yet
 - [ ] Usage UI — `rule_hits` is written on every anonymization; nothing reads it yet
 - [x] Streaming mode and LLM provider integration — `stream_mode`, `upstream` and `api_key_env` are consumed by `shade serve`; it serves both the Anthropic Messages shape and the OpenAI Chat Completions shape (streamed and non-streamed)
