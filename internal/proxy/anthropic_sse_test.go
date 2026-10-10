@@ -16,6 +16,9 @@ import (
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/werbot/shade/internal/config"
+	"github.com/werbot/shade/internal/placeholder"
 )
 
 // sseEvent renders one server-sent event the way the upstream does.
@@ -68,11 +71,18 @@ func (r *streamRecorder) String() string {
 	return r.buf.String()
 }
 
-// runPipe drives one stream through the pipe and returns what reached the client.
+// runPipe drives one stream through the pipe in the default (incremental) mode and returns
+// what reached the client.
 func runPipe(t *testing.T, s *Server, eng Engine, src string) (string, error) {
 	t.Helper()
+	return runPipeMode(t, s, eng, config.StreamIncremental, src)
+}
+
+// runPipeMode drives one stream through the pipe in the given mode.
+func runPipeMode(t *testing.T, s *Server, eng Engine, mode, src string) (string, error) {
+	t.Helper()
 	var dst streamRecorder
-	err := s.pipeAnthropicSSE(context.Background(), eng, strings.NewReader(src), &dst)
+	err := s.pipeAnthropicSSE(context.Background(), eng, mode, strings.NewReader(src), &dst)
 	return dst.String(), err
 }
 
@@ -236,7 +246,9 @@ func TestSSEForwardsPingImmediately(t *testing.T) {
 	s := walkerServer(t, nil)
 
 	done := make(chan error, 1)
-	go func() { done <- s.pipeAnthropicSSE(context.Background(), &answerEngine{}, src, dst) }()
+	go func() {
+		done <- s.pipeAnthropicSSE(context.Background(), &answerEngine{}, config.StreamIncremental, src, dst)
+	}()
 
 	select {
 	case <-dst.flushed:
@@ -290,7 +302,7 @@ func TestSSERestoresTextSplitInsideOneFrame(t *testing.T) {
 	s := walkerServer(t, nil)
 	var dst streamRecorder
 	err := s.pipeAnthropicSSE(context.Background(), &answerEngine{replace: [][2]string{{token, value}}},
-		iotest.OneByteReader(strings.NewReader(src)), &dst)
+		config.StreamIncremental, iotest.OneByteReader(strings.NewReader(src)), &dst)
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
@@ -506,7 +518,7 @@ func TestSSETwoStreamsDoNotShareState(t *testing.T) {
 	run := func(value string) result {
 		var dst streamRecorder
 		src := &barrierReader{chunks: [][]byte{[]byte(f1), []byte(tail)}, wg: &wg}
-		err := s.pipeAnthropicSSE(context.Background(), &answerEngine{replace: [][2]string{{"<HOST_1>", value}}}, src, &dst)
+		err := s.pipeAnthropicSSE(context.Background(), &answerEngine{replace: [][2]string{{"<HOST_1>", value}}}, config.StreamIncremental, src, &dst)
 		return result{out: dst.String(), err: err}
 	}
 
@@ -742,5 +754,290 @@ func TestSSEToolArgumentsPassThroughWhenTheEngineRestoreFails(t *testing.T) {
 	}
 	if line := diag.String(); !strings.Contains(line, "restore failed") {
 		t.Errorf("diag = %q, want the restore failure reported", line)
+	}
+}
+
+// textDeltaFrames returns the index of every text_delta frame in the output, in order.
+func textDeltaFrames(out string) []int {
+	var at []int
+	for i, frame := range outputFrames(out) {
+		if frame.event != "content_block_delta" {
+			continue
+		}
+		data, ok := parseFrameData(frame)
+		if !ok {
+			continue
+		}
+		delta, _ := data["delta"].(map[string]any)
+		if typ, _ := delta["type"].(string); typ == "text_delta" {
+			at = append(at, i)
+		}
+	}
+	return at
+}
+
+// TestBufferedMergesTextIntoSingleDeltaBeforeMessageDelta pins buffered mode: text deltas are
+// collected and emitted as one restored delta, placed before the block's content_block_stop
+// and so before message_delta — which is what makes a fail-closed refusal possible. Emit each
+// delta as it arrives and more than one text_delta appears; emit at message_stop and the delta
+// lands after message_delta.
+func TestBufferedMergesTextIntoSingleDeltaBeforeMessageDelta(t *testing.T) {
+	const value = "db.prod.local"
+	src := sseEvent("message_start", `{"type":"message_start"}`) +
+		sseEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+		textDeltaFrame(t, 0, "a<HOST_1") +
+		textDeltaFrame(t, 0, ">b") +
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`) +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+	s := walkerServer(t, nil)
+	out, err := runPipeMode(t, s, &answerEngine{replace: [][2]string{{"<HOST_1>", value}}}, config.StreamBuffered, src)
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	deltas := textDeltaFrames(out)
+	if len(deltas) != 1 {
+		t.Fatalf("text_delta frames = %d, want exactly 1 merged delta", len(deltas))
+	}
+	if got := collectedText(out); got != "a"+value+"b" {
+		t.Errorf("restored text = %q, want %q", got, "a"+value+"b")
+	}
+	if strings.Contains(out, "<HOST_1") {
+		t.Errorf("a raw placeholder fragment reached the client: %q", out)
+	}
+	stopAt, msgDeltaAt := -1, -1
+	for i, frame := range outputFrames(out) {
+		switch frame.event {
+		case "content_block_stop":
+			stopAt = i
+		case "message_delta":
+			msgDeltaAt = i
+		}
+	}
+	if !(deltas[0] < stopAt && stopAt < msgDeltaAt) {
+		t.Errorf("text_delta at %d, content_block_stop at %d, message_delta at %d; want the delta before the stop, before message_delta",
+			deltas[0], stopAt, msgDeltaAt)
+	}
+}
+
+// TestBufferedRefusesUnderFailClosed pins the whole point of buffered mode: an unresolved token
+// in the collected text refuses the answer. One error frame carries exactly the refusal body
+// refuseUnresolved returned, no message_stop follows, the token never reaches the client, and
+// the refusal leaves a blocked row in the journal. Skip the refuseUnresolved call and the
+// restored text with the raw token goes out instead of the error frame.
+func TestBufferedRefusesUnderFailClosed(t *testing.T) {
+	const token = "<HOST_1>"
+	var diag bytes.Buffer
+	s := walkerServer(t, &diag)
+	eng := &answerEngine{unresolved: []placeholder.Token{{Type: "HOST", Raw: token}}}
+	src := sseEvent("message_start", `{"type":"message_start"}`) +
+		sseEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+		textDeltaFrame(t, 0, "the host is "+token) +
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`) +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+	out, err := runPipeMode(t, s, eng, config.StreamBuffered, src)
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	if strings.Contains(out, token) {
+		t.Errorf("the refusal leaked the token: %q", out)
+	}
+	if strings.Contains(out, "message_stop") {
+		t.Errorf("no message_stop may follow a refusal: %q", out)
+	}
+	want := "event: error\ndata: " + string(errorBody("shade_unresolved", "1 placeholders could not be restored: HOST"))
+	if !strings.Contains(out, want) {
+		t.Errorf("output = %q, want the refusal frame %q", out, want)
+	}
+	if got := eng.blockedTypes(); !slices.Equal(got, []string{"HOST"}) {
+		t.Errorf("blocked types = %v, want one HOST row", got)
+	}
+	if line := diag.String(); strings.Contains(line, "stream ended early") {
+		t.Errorf("diag = %q, want no spurious early end after a refusal", line)
+	}
+}
+
+// TestBufferedStillForwardsPing pins the idle-watchdog rule for buffered mode: ping reaches the
+// client before the next frame exists, even though text is being collected. Hold ping with the
+// text and no signal arrives before the gate opens.
+func TestBufferedStillForwardsPing(t *testing.T) {
+	ping := sseEvent("ping", `{"type":"ping"}`)
+	stop := sseEvent("message_stop", `{"type":"message_stop"}`)
+	src := &gatedReader{steps: [][]byte{[]byte(ping), []byte(stop)}, gate: make(chan struct{})}
+	dst := &signallingDst{flushed: make(chan struct{}, 4)}
+	s := walkerServer(t, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.pipeAnthropicSSE(context.Background(), &answerEngine{}, config.StreamBuffered, src, dst)
+	}()
+
+	select {
+	case <-dst.flushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ping was not flushed before the next frame was released")
+	}
+	close(src.gate)
+	if err := <-done; err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if got := dst.String(); got != ping+stop {
+		t.Errorf("output = %q, want %q", got, ping+stop)
+	}
+}
+
+// TestBufferedRestoresToolArgumentsLikeIncremental pins that the tool path is mode-independent:
+// input_json_delta frames are buffered whole per index and come out as one frame, immediately
+// before the content_block_stop, with the token already restored. Skip finishToolBlock in
+// buffered mode and no input_json_delta is emitted.
+func TestBufferedRestoresToolArgumentsLikeIncremental(t *testing.T) {
+	const value = "db.prod.local"
+	src := sseEvent("content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_1","name":"Bash","input":{}}}`) +
+		inputJSONDeltaFrame(t, 1, `{"cmd":"ssh `) +
+		inputJSONDeltaFrame(t, 1, `<HOST_1>`) +
+		inputJSONDeltaFrame(t, 1, `"}`) +
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":1}`) +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+	s := walkerServer(t, nil)
+	out, err := runPipeMode(t, s, &answerEngine{replace: [][2]string{{"<HOST_1>", value}}}, config.StreamBuffered, src)
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	jsonDelta, stop := -1, -1
+	for i, frame := range outputFrames(out) {
+		switch frame.event {
+		case "content_block_stop":
+			stop = i
+		case "content_block_delta":
+			if data, ok := parseFrameData(frame); ok {
+				if delta, _ := data["delta"].(map[string]any); delta["type"] == "input_json_delta" {
+					if jsonDelta != -1 {
+						t.Errorf("more than one input_json_delta frame was emitted")
+					}
+					jsonDelta = i
+				}
+			}
+		}
+	}
+	if jsonDelta == -1 {
+		t.Fatal("no input_json_delta frame was emitted")
+	}
+	if jsonDelta != stop-1 {
+		t.Errorf("input_json_delta at %d, content_block_stop at %d, want them adjacent", jsonDelta, stop)
+	}
+	args := decodeJSON(t, []byte(toolArguments(t, outputFrames(out)[jsonDelta])))
+	if got := args["cmd"]; got != "ssh "+value {
+		t.Errorf("tool command = %v, want %q", got, "ssh "+value)
+	}
+}
+
+// TestBufferedRestoreFailureHonoursThePolicy pins the hard engine failure arm of buffered mode:
+// fail_closed refuses with a generic body naming no value (the answer may still hold
+// placeholders), while fail_open_log forwards the text as it came. Both report the failure on
+// diag. Drop the policy branch and one of the two expectations breaks.
+func TestBufferedRestoreFailureHonoursThePolicy(t *testing.T) {
+	const token = "<HOST_1>"
+	src := sseEvent("message_start", `{"type":"message_start"}`) +
+		sseEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+		textDeltaFrame(t, 0, "reach "+token) +
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+	failing := func() *answerEngine {
+		return &answerEngine{restoreErr: errors.New("store is unreadable"), restoreErrOn: "reach"}
+	}
+
+	t.Run("fail_closed refuses", func(t *testing.T) {
+		var diag bytes.Buffer
+		out, err := runPipeMode(t, walkerServer(t, &diag), failing(), config.StreamBuffered, src)
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		if strings.Contains(out, token) || strings.Contains(out, "message_stop") {
+			t.Errorf("output = %q, want a refusal with no token and no message_stop", out)
+		}
+		want := "event: error\ndata: " + string(errorBody("shade_unresolved", "the answer could not be restored"))
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want the generic refusal %q", out, want)
+		}
+		if !strings.Contains(diag.String(), "restore failed") {
+			t.Errorf("diag = %q, want the restore failure reported", diag.String())
+		}
+	})
+
+	t.Run("fail_open_log forwards raw", func(t *testing.T) {
+		var diag bytes.Buffer
+		s := answerServer(t, "http://127.0.0.1:0", &answerEngine{}, &diag, "fail_policy = \"fail_open_log\"\n")
+		out, err := runPipeMode(t, s, failing(), config.StreamBuffered, src)
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		if got := collectedText(out); got != "reach "+token {
+			t.Errorf("text = %q, want the raw text forwarded under fail_open_log", got)
+		}
+		if strings.Contains(out, "event: error") {
+			t.Errorf("fail_open_log must not refuse: %q", out)
+		}
+		if !strings.Contains(diag.String(), "restore failed") {
+			t.Errorf("diag = %q, want the restore failure reported", diag.String())
+		}
+	})
+}
+
+// TestBufferedReportsTextWithheldAtMessageStop pins that collected text a block never closed is
+// not silently lost: it is dropped — a raw token never reaches the client — and the loss is
+// reported on diag without its value. Remove the message_stop guard and the diag line vanishes.
+func TestBufferedReportsTextWithheldAtMessageStop(t *testing.T) {
+	const value = "db.prod.local"
+	var diag bytes.Buffer
+	s := walkerServer(t, &diag)
+	// A malformed stream: the text block never closes before message_stop.
+	src := sseEvent("message_start", `{"type":"message_start"}`) +
+		sseEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+		textDeltaFrame(t, 0, "held <HOST_1>") +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+	out, err := runPipeMode(t, s, &answerEngine{replace: [][2]string{{"<HOST_1>", value}}}, config.StreamBuffered, src)
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if got := collectedText(out); got != "" {
+		t.Errorf("text = %q, want nothing emitted without a content_block_stop", got)
+	}
+	if line := diag.String(); !strings.Contains(line, "withheld at message_stop") {
+		t.Errorf("diag = %q, want the dropped buffered text reported", line)
+	}
+	if line := diag.String(); strings.Contains(line, value) {
+		t.Errorf("diag must carry no value: %q", line)
+	}
+}
+
+// TestBufferedReportsTextDroppedAtEarlyEOF pins Review Focus 5 for buffered mode: a stream that
+// ends without message_stop while text is still collected is not silent — the text is dropped
+// and the early end is reported. Remove the diag line and the loss is swallowed.
+func TestBufferedReportsTextDroppedAtEarlyEOF(t *testing.T) {
+	const value = "db.prod.local"
+	var diag bytes.Buffer
+	s := walkerServer(t, &diag)
+	src := sseEvent("message_start", `{"type":"message_start"}`) +
+		sseEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+		textDeltaFrame(t, 0, "held <HOST_1>") // no content_block_stop, no message_stop
+	out, err := runPipeMode(t, s, &answerEngine{replace: [][2]string{{"<HOST_1>", value}}}, config.StreamBuffered, src)
+	if err == nil {
+		t.Fatal("want an error when the stream ends without message_stop")
+	}
+	if got := collectedText(out); got != "" {
+		t.Errorf("text = %q, want the unemitted text dropped, never sent raw", got)
+	}
+	if strings.Contains(out, "<HOST_1") {
+		t.Errorf("the raw placeholder fragment reached the client: %q", out)
+	}
+	if line := diag.String(); !strings.Contains(line, "stream ended early") {
+		t.Errorf("diag = %q, want the early end reported", line)
+	}
+	if line := diag.String(); strings.Contains(line, value) {
+		t.Errorf("diag must carry no value: %q", line)
 	}
 }

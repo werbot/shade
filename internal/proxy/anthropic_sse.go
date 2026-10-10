@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,22 +14,35 @@ import (
 	"github.com/werbot/shade/internal/placeholder"
 )
 
+// errRefused ends a buffered stream early: the collected text could not be restored and the
+// policy refused the answer. The error frame is already written, so the caller stops without
+// reporting an early end — the stream ended exactly where it was told to.
+var errRefused = errors.New("proxy: stream refused")
+
 // pipeAnthropicSSE rewrites an upstream event stream to the client. The text of a text_delta
 // goes through a Flusher, so a placeholder split across frames is held at the last "<" and
 // restored whole; a tool_use block's arguments are buffered whole and restored before the
 // client sees them, because the raw token would otherwise be executed (spec §7).
 //
-// The flusher and the tool accumulators are local to this call: two requests never share
-// them. dst is flushed after every frame, so ping reaches the client at once and an idle
-// watchdog never ends the session. A stream that ends without message_stop is not silent:
-// the held tail is dropped (a raw token must never reach the client) and the loss is
-// reported on diag.
-func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, src io.Reader, dst streamDst) error {
+// mode selects how text is relayed. In incremental mode each text_delta is restored and sent
+// as it arrives, so a closed token of an unknown type has already reached the client before it
+// is seen and the answer cannot be refused. In buffered mode the text of a block is collected
+// and restored as one piece at its content_block_stop, before message_delta, so an unresolved
+// token refuses the whole answer (spec §7) — the behaviour a non-interactive client wants.
+//
+// The flusher and the accumulators are local to this call: two requests never share them. dst
+// is flushed after every frame, so ping reaches the client at once and an idle watchdog never
+// ends the session. A stream that ends without message_stop is not silent: the held tail is
+// dropped (a raw token must never reach the client) and the loss is reported on diag.
+func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, mode string, src io.Reader, dst streamDst) error {
 	br := bufio.NewReader(src)
 	fl := placeholder.NewFlusher()
 	// tools maps a tool_use block's index to the partial_json accumulated for it. A nil
 	// value marks a block that has started but has no arguments yet.
 	tools := make(map[json.Number][]byte)
+	// bs is non-nil only in buffered mode, where text is collected per block and restored as
+	// one piece at the block's stop.
+	bs := s.newBufferedState(mode)
 
 	for {
 		frame, err := readFrame(br)
@@ -45,7 +59,12 @@ func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, src io.Reader, 
 			}
 			return err
 		}
-		if err := s.handleSSEFrame(ctx, e, fl, tools, frame, dst); err != nil {
+		if err := s.handleSSEFrame(ctx, e, fl, tools, bs, frame, dst); err != nil {
+			// A refusal is not a broken stream: the error frame is already out and the answer
+			// ended exactly where it was told to, so it is not reported as an early end.
+			if errors.Is(err, errRefused) {
+				return nil
+			}
 			return err
 		}
 		// message_stop and error both end the stream. An error event is terminal in the
@@ -58,23 +77,44 @@ func (s *Server) pipeAnthropicSSE(ctx context.Context, e Engine, src io.Reader, 
 }
 
 // handleSSEFrame dispatches one event. Events the pipe does not rewrite — ping, message_start,
-// message_delta, content_block_start, an unknown event — go on byte-for-byte.
-func (s *Server) handleSSEFrame(ctx context.Context, e Engine, fl *placeholder.Flusher, tools map[json.Number][]byte, frame sseFrame, dst streamDst) error {
+// message_delta, content_block_start, an unknown event — go on byte-for-byte. bs is the
+// buffered-mode state, nil in incremental mode.
+func (s *Server) handleSSEFrame(ctx context.Context, e Engine, fl *placeholder.Flusher, tools map[json.Number][]byte, bs *bufferedState, frame sseFrame, dst streamDst) error {
 	switch frame.event {
 	case "content_block_start":
 		s.startToolBlock(frame, tools)
 		return writeRaw(dst, frame.raw)
 	case "content_block_delta":
-		return s.handleBlockDelta(ctx, e, fl, tools, frame, dst)
+		return s.handleBlockDelta(ctx, e, fl, tools, bs, frame, dst)
 	case "content_block_stop":
+		// In buffered mode the block's collected text is restored and emitted just before its
+		// stop, so a content_block_delta still precedes the stop and message_delta.
+		if bs != nil {
+			blocked, err := s.finishTextBlock(ctx, e, bs, frame, dst)
+			if err != nil {
+				return err
+			}
+			if blocked {
+				return errRefused
+			}
+		}
 		if err := s.finishToolBlock(ctx, e, tools, frame, dst); err != nil {
 			return err
 		}
 		return writeRaw(dst, frame.raw)
 	case "message_stop":
-		// The tail held for a possible placeholder cannot be completed now: it is dropped,
-		// never handed to the client, and its loss is reported.
-		if _, withheld := fl.Flush(); withheld > 0 {
+		// Text still held cannot be completed now: the flusher's tail from a possible
+		// placeholder, and in buffered mode a block whose deltas arrived without a
+		// content_block_stop. Neither goes to the client — a raw token never may — and the
+		// loss is reported.
+		withheld := 0
+		if _, n := fl.Flush(); n > 0 {
+			withheld += n
+		}
+		if bs != nil {
+			withheld += bs.withheld()
+		}
+		if withheld > 0 {
 			fmt.Fprintf(s.opts.Diag, "proxy: %d bytes withheld at message_stop\n", withheld)
 		}
 		return writeRaw(dst, frame.raw)
@@ -103,7 +143,7 @@ func (s *Server) startToolBlock(frame sseFrame, tools map[json.Number][]byte) {
 
 // handleBlockDelta routes a content_block_delta by its delta type. thinking_delta and
 // signature_delta are forwarded untouched: rewriting either invalidates the signature.
-func (s *Server) handleBlockDelta(ctx context.Context, e Engine, fl *placeholder.Flusher, tools map[json.Number][]byte, frame sseFrame, dst streamDst) error {
+func (s *Server) handleBlockDelta(ctx context.Context, e Engine, fl *placeholder.Flusher, tools map[json.Number][]byte, bs *bufferedState, frame sseFrame, dst streamDst) error {
 	data, ok := parseFrameData(frame)
 	if !ok {
 		return writeRaw(dst, frame.raw)
@@ -111,6 +151,11 @@ func (s *Server) handleBlockDelta(ctx context.Context, e Engine, fl *placeholder
 	delta, _ := data["delta"].(map[string]any)
 	switch typ, _ := delta["type"].(string); typ {
 	case "text_delta":
+		// Buffered mode holds the text for the block's stop instead of emitting it now.
+		if bs != nil {
+			accumulateTextDelta(data, delta, bs.byIndex)
+			return nil
+		}
 		return s.handleTextDelta(ctx, e, fl, data, delta, frame, dst)
 	case "input_json_delta":
 		s.accumulateToolDelta(data, delta, tools)

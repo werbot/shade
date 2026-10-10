@@ -385,12 +385,22 @@ written for a future version will not break today's binary.
 | `fail_policy` | `fail_closed` | `fail_closed` blocks an answer with unresolved placeholders (exit 3); `fail_open_log` lets it through with a warning |
 | `entities_ttl` | `90d` | Default age for `shade entities prune` |
 | `prompt_gate` | `off` | `on` makes the `UserPromptSubmit` hook block a prompt whose content looks sensitive, naming the types. `auto` means "unless a proxy is active" and is not live until the proxy exists, so `off` and `auto` behave the same today |
+| `stream_mode` | `incremental` | How `shade serve` relays a streamed answer. `incremental` restores and sends each text delta as it arrives; `buffered` collects a block's text and restores it whole at the block's stop, so an unresolved token can refuse the answer before it reaches the client. `buffered` is not the behaviour Claude Code expects — it is for non-interactive clients |
+| `upstream` | `https://api.anthropic.com` | The real endpoint `shade serve` forwards anonymized traffic to |
+| `api_key_env` | `ANTHROPIC_API_KEY` | The environment variable whose value `shade serve` substitutes for the client's key; an empty value forwards the client's own credentials untouched |
 
 ```toml
 fail_policy = "fail_open_log"
 entities_ttl = "30d"
 prompt_gate = "on"
 ```
+
+`stream_mode` matters only for `shade serve`. `incremental` streams the answer as it
+arrives — what Claude Code expects — but a placeholder of an unknown type is only seen
+once its bytes are already on the way, so the answer cannot be refused at that point.
+`buffered` waits for a whole text block before restoring it, which makes a `fail_closed`
+refusal possible; it is aimed at non-interactive clients and is not the behaviour Claude
+Code expects.
 
 `SHADE_HOME` overrides the state directory (`~/.shade`).
 
@@ -538,7 +548,7 @@ MCP adapter and the skills. The rest is ahead of us; the code is already sliced 
 - [x] MCP `scan` tool — reports the types and the rules that found them, never the fragment or the offset
 - [ ] Rule packages — the `packages` table exists; nothing writes to it yet
 - [ ] Usage UI — `rule_hits` is written on every anonymization; nothing reads it yet
-- [ ] Streaming mode and LLM provider integration — the config keys are declared but have no consumer
+- [ ] Streaming mode and LLM provider integration — `stream_mode`, `upstream` and `api_key_env` are now consumed by `shade serve`; the OpenAI provider is still ahead
 
 ## 📄 License
 

@@ -246,7 +246,13 @@ func (s *Server) streamAnthropic(ctx context.Context, eng Engine, resp *http.Res
 		dst = nopFlushWriter{w}
 	}
 	dst.Flush()
-	_ = s.pipeAnthropicSSE(ctx, eng, resp.Body, dst)
+	// The stream mode comes from the config, read here like the fail policy on the
+	// non-streaming arm: a config that cannot be read leaves the default, incremental.
+	mode := config.DefaultStreamMode
+	if cfg, err := config.Load(s.opts.Home, s.opts.Project); err == nil {
+		mode = cfg.StreamMode
+	}
+	_ = s.pipeAnthropicSSE(ctx, eng, mode, resp.Body, dst)
 }
 
 // nopFlushWriter adapts a ResponseWriter that does not implement Flush.
