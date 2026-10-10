@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/werbot/shade/internal/config"
 	"github.com/werbot/shade/internal/core"
@@ -104,7 +105,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleMessages serves the Anthropic Messages endpoint. The body is anonymized and the
 // directive injected before it goes out; the answer is handed back with the real values put
-// in, and an event stream is still passed on whole until the streaming pipe lands.
+// in, an event stream frame by frame.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	s.forwardAnthropic(w, r)
 }
@@ -122,11 +123,11 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 // (spec §11) and never reaches the upstream.
 //
 // A non-success status is sanitized: its body is anonymized rather than cut, so the wording
-// a client retries on survives while no value travels in it. A success is a JSON answer
-// whose values are restored. An answer that is not JSON at all — an event stream, which the
-// later streaming task owns, or a gateway's own page — is handed on unmodified. A restore the
-// engine itself failed is not: the policy decides, so a broken store never silently hands the
-// client an answer that may still hold placeholders.
+// a client retries on survives while no value travels in it. A success is either an event
+// stream, which is rewritten frame by frame with a safe-boundary flush, or a JSON answer
+// whose values are restored. An answer that is neither — a gateway's own page — is handed on
+// unmodified. A restore the engine itself failed is not: the policy decides, so a broken store
+// never silently hands the client an answer that may still hold placeholders.
 func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -166,6 +167,12 @@ func (s *Server) forwardAnthropic(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeUpstreamAnswer(w, resp, s.sanitizeError(ctx, eng, resp.StatusCode, raw))
+		return
+	}
+	// A stream is decided by the response's media type, not the request's: the request is
+	// always application/json, and stream:true only shows up in the answer.
+	if isEventStream(resp.Header.Get("Content-Type")) {
+		s.streamAnthropic(ctx, eng, resp, w)
 		return
 	}
 	raw, err := io.ReadAll(resp.Body)
@@ -218,6 +225,34 @@ func writeUpstreamAnswer(w http.ResponseWriter, resp *http.Response, body []byte
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
 }
+
+// isEventStream reports whether the upstream answered with an event stream. The media type
+// may carry parameters (charset), so only its prefix is compared.
+func isEventStream(contentType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/event-stream")
+}
+
+// streamAnthropic hands an event stream to the client frame by frame. The status and headers
+// go out first, so once the first frame is written the answer can no longer be replaced by an
+// error: a failure past that point is reported by pipeAnthropicSSE where it can be (an early
+// end) and the connection is left as it is.
+func (s *Server) streamAnthropic(ctx context.Context, eng Engine, resp *http.Response, w http.ResponseWriter) {
+	copyResponseHeaders(w, resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	dst, ok := w.(streamDst)
+	if !ok {
+		// Every net/http server and httptest recorder implements Flush; a writer that does
+		// not simply buffers the stream rather than losing it.
+		dst = nopFlushWriter{w}
+	}
+	dst.Flush()
+	_ = s.pipeAnthropicSSE(ctx, eng, resp.Body, dst)
+}
+
+// nopFlushWriter adapts a ResponseWriter that does not implement Flush.
+type nopFlushWriter struct{ io.Writer }
+
+func (nopFlushWriter) Flush() {}
 
 // copyResponseHeaders copies the upstream's headers. Content-Length is left out: every arm
 // rewrites the body, so the upstream's length no longer describes what is written and a
