@@ -65,22 +65,11 @@ func toRuleInfos(rows []store.RuleRow) []ruleInfo {
 
 // rulesTest compiles the rule from the request and runs it over the sample, exactly as the
 // local `shade rules test` does. No engine and no store are opened: the rule is ad-hoc, the
-// sample is the raw text, and nothing is stored. kind and type default to regex and SECRET,
-// the same defaults the CLI takes.
+// sample is the raw text, and nothing is stored.
 func rulesTest(in rulesTestInput) (*sdk.CallToolResult, spansOutput, error) {
-	kind := in.Kind
-	if kind == "" {
-		kind = "regex"
-	}
-	typ := in.Type
-	if typ == "" {
-		typ = "SECRET"
-	}
-	rule, err := rules.Compile(rules.Spec{
-		ID: rules.AdHocName, Type: typ, Kind: kind, Pattern: in.Pattern, Enabled: true,
-	})
+	spans, err := rules.TestSample(rules.Spec{Type: in.Type, Kind: in.Kind, Pattern: in.Pattern}, in.Sample)
 	if err != nil {
 		return nil, spansOutput{}, err
 	}
-	return nil, spansOutput{Spans: toSpans(rules.Detect(in.Sample, []rules.Rule{rule}))}, nil
+	return nil, spansOutput{Spans: toSpans(spans)}, nil
 }

@@ -14,8 +14,7 @@ import (
 // the message would just say "pattern ...".
 //
 // It is exported because the name travels out of the rules_test MCP tool in the rule field
-// of every span: the CLI and the tool must agree on it, and two literals in two packages
-// would drift silently.
+// of every span, and the tests of other packages assert on it.
 const AdHocName = "adhoc"
 
 // Rule is a compiled rule: the spec plus ready-made regexes.
