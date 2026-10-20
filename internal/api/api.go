@@ -1,7 +1,8 @@
 // Package api is the HTTP handler of `shade ui`: the REST endpoints for the rules and the built
-// page, behind the Guard that keeps other sites off the loopback port. Every request opens its
-// own engine, the way proxy and mcp do, so a rule written by the CLI is seen at once and a rule
-// written here is seen by the hook and the proxy on their next call: the SQLite store is shared.
+// page, behind the Guard that keeps other sites off the loopback port. A request that reads or
+// writes the rules opens its own engine, the way proxy and mcp do, so a rule written by the CLI is
+// seen at once and a rule written here is seen by the hook and the proxy on their next call: the
+// SQLite store is shared. The page and the test of a candidate rule open no engine.
 package api
 
 import (
@@ -9,6 +10,8 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"path"
+	"strings"
 
 	"github.com/werbot/shade/internal/core"
 )
@@ -71,8 +74,24 @@ func page(files fs.FS) http.Handler {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
+		if hidden(files, r.URL.Path) {
+			http.NotFound(w, r)
+			return
+		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// hidden tells a path that FileServerFS would serve and the page must not: a directory other than
+// the root, which it lists, and a file with a dot first in its name, like the .gitkeep that the
+// embed takes along. A path that is not in the files is left to FileServerFS and its 404.
+func hidden(files fs.FS, urlPath string) bool {
+	name := strings.TrimPrefix(path.Clean("/"+urlPath), "/")
+	if name == "" {
+		return false // the root is the page: FileServerFS answers it with index.html
+	}
+	info, err := fs.Stat(files, name)
+	return err == nil && (info.IsDir() || strings.HasPrefix(info.Name(), "."))
 }
 
 // server holds what the handlers share: where an engine comes from.

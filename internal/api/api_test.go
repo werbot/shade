@@ -17,11 +17,15 @@ import (
 	"github.com/werbot/shade/internal/core"
 )
 
-// testPage is the built page of the tests: one file of each kind the real build has.
+// testPage is the built page of the tests: one file of each kind the real build has, and the
+// .gitkeep that dist/ holds on every checkout and the embed takes along. assets/fonts/ is a
+// directory in a directory, which no build emits yet.
 var testPage = fstest.MapFS{
-	"index.html":     {Data: []byte("<!doctype html><title>shade</title>")},
-	"assets/app.js":  {Data: []byte("console.log('shade');")},
-	"assets/app.css": {Data: []byte("body{margin:0}")},
+	"index.html":            {Data: []byte("<!doctype html><title>shade</title>")},
+	"assets/app.js":         {Data: []byte("console.log('shade');")},
+	"assets/app.css":        {Data: []byte("body{margin:0}")},
+	"assets/fonts/ui.woff2": {Data: []byte("font")},
+	".gitkeep":              {},
 }
 
 // pageFiles are the URLs of testPage, the file each one serves and the media type it comes with.
@@ -164,6 +168,33 @@ func TestStaticPage(t *testing.T) {
 	// There is no fallback to index.html: the page has one screen and no client-side router.
 	if rec := f.do(http.MethodGet, "/nope", ""); rec.Code != http.StatusNotFound {
 		t.Errorf("GET /nope: status = %d, want 404", rec.Code)
+	}
+}
+
+// The page is the built files and nothing else, though FileServerFS would also list a directory
+// and serve the .gitkeep. The 200 rows are the controls: a handler that refuses everything fails.
+func TestPageServesOnlyTheBuiltFiles(t *testing.T) {
+	f := newFixture(t)
+	for _, tc := range []struct {
+		method, target string
+		status         int
+	}{
+		{http.MethodGet, "/", http.StatusOK},
+		{http.MethodHead, "/", http.StatusOK},
+		{http.MethodGet, "/assets/app.js", http.StatusOK},
+		{http.MethodHead, "/assets/app.js", http.StatusOK},
+		{http.MethodGet, "/assets/fonts/ui.woff2", http.StatusOK},
+		{http.MethodGet, "/assets", http.StatusNotFound},
+		{http.MethodGet, "/assets/", http.StatusNotFound},
+		{http.MethodGet, "/assets/fonts", http.StatusNotFound},
+		{http.MethodGet, "/assets/fonts/", http.StatusNotFound},
+		{http.MethodGet, "/.gitkeep", http.StatusNotFound},
+	} {
+		t.Run(tc.method+" "+tc.target, func(t *testing.T) {
+			if rec := f.do(tc.method, tc.target, ""); rec.Code != tc.status {
+				t.Errorf("status = %d, want %d", rec.Code, tc.status)
+			}
+		})
 	}
 }
 

@@ -3,7 +3,6 @@ package api
 import (
 	"cmp"
 	"errors"
-	"fmt"
 	"net/http"
 	"regexp"
 
@@ -34,7 +33,7 @@ type createRequest struct {
 func (req createRequest) validate() error {
 	switch {
 	case !ruleName.MatchString(req.Name):
-		return fmt.Errorf("name must match %s", ruleName)
+		return errors.New(`name must be 1 to 64 characters: ASCII letters, digits, ".", "_" or "-", starting with a letter or a digit`)
 	case req.Type == "":
 		return errors.New("type is required")
 	case req.Pattern == "":
