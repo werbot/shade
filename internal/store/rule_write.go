@@ -10,6 +10,22 @@ import (
 	"github.com/werbot/shade/internal/rules"
 )
 
+// ruleColumns and ruleValues are the columns writeRule manages. package_id
+// is not filled: rule packages will appear in phase 3.
+const (
+	ruleColumns = `project_id, name, type, kind, pattern, secret_group, keywords,
+		entropy_min, validator, allowlist, order_idx, enabled, builtin, updated_at`
+	ruleValues = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`
+	// ruleAssign does not touch name and project_id: they are the key of the row, and updating
+	// must not move a rule between scopes.
+	ruleAssign = `type=excluded.type, kind=excluded.kind, pattern=excluded.pattern,
+		secret_group=excluded.secret_group, keywords=excluded.keywords,
+		entropy_min=excluded.entropy_min, validator=excluded.validator,
+		allowlist=excluded.allowlist, order_idx=excluded.order_idx,
+		enabled=excluded.enabled, builtin=excluded.builtin,
+		updated_at=excluded.updated_at`
+)
+
 // writeRule is the shared body of AddRule (upsert: a taken name is rewritten) and
 // CreateRule (a taken name is ErrRuleExists).
 func (s *Store) writeRule(ctx context.Context, projectID *int64, r rules.Spec, upsert bool) error {

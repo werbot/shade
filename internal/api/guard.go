@@ -30,7 +30,7 @@ func Guard(port int, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w, r)
 		// A page of another site reaches this port only under its own name (DNS rebinding), so
-		// the Host must be exactly one of the two this server answers to.
+		// the Host must be exactly one of the hosts this server answers to.
 		if !slices.Contains(hosts, r.Host) {
 			writeError(w, http.StatusForbidden, "host not allowed")
 			return

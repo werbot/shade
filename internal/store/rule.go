@@ -30,22 +30,6 @@ type RuleRow struct {
 const ruleFields = `name, type, kind, pattern, secret_group, keywords,
 	entropy_min, validator, allowlist, order_idx, enabled, builtin`
 
-// ruleColumns and ruleValues are the columns writeRule manages. package_id
-// is not filled: rule packages will appear in phase 3.
-const (
-	ruleColumns = `project_id, name, type, kind, pattern, secret_group, keywords,
-		entropy_min, validator, allowlist, order_idx, enabled, builtin, updated_at`
-	ruleValues = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`
-	// ruleAssign does not touch name and project_id: they are the key of the row, and updating
-	// must not move a rule between scopes.
-	ruleAssign = `type=excluded.type, kind=excluded.kind, pattern=excluded.pattern,
-		secret_group=excluded.secret_group, keywords=excluded.keywords,
-		entropy_min=excluded.entropy_min, validator=excluded.validator,
-		allowlist=excluded.allowlist, order_idx=excluded.order_idx,
-		enabled=excluded.enabled, builtin=excluded.builtin,
-		updated_at=excluded.updated_at`
-)
-
 // RulesForProject collects the rules applicable to the project: the global ones plus
 // the rules of the project itself. To avoid fetching them with two queries, the project ones are read
 // the same SELECT — the global ones come first, and when folded into a map a same-named
@@ -83,8 +67,9 @@ func (s *Store) RulesForProject(ctx context.Context, projectID int64) ([]rules.R
 	return sortedRules(byName), nil
 }
 
-// ListRules returns rule rows for the CLI. projectID == nil means all rules
-// the store, otherwise the global ones plus the rules of the given project.
+// ListRules returns rule rows for the CLI, the MCP rules_list tool, the UI and SeedBuiltin.
+// projectID == nil means all rules the store, otherwise the global ones plus the rules of the
+// given project.
 func (s *Store) ListRules(ctx context.Context, projectID *int64) ([]RuleRow, error) {
 	q := `SELECT name, type, kind, pattern, secret_group, enabled, builtin, project_id FROM rules`
 	var args []any
@@ -126,7 +111,7 @@ func (s *Store) ListRules(ctx context.Context, projectID *int64) ([]RuleRow, err
 // Adding a rule with the same name in the same scope again updates
 // the row: uniqueness is held by partial indexes, and a bare INSERT would fail on
 // them an error that the user would not understand. The exception is a builtin rule:
-// its row is not updated but rejected (see writeRule). A rule the engine cannot compile
+// its row is not updated but rejected (see refuseBuiltin). A rule the engine cannot compile
 // is rejected too (ErrInvalidRule).
 func (s *Store) AddRule(ctx context.Context, projectID *int64, r rules.Spec) error {
 	return s.writeRule(ctx, projectID, r, true)

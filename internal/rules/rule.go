@@ -13,8 +13,9 @@ import (
 // does not get into the database, but a Compile error names the rule, and without a name
 // the message would just say "pattern ...".
 //
-// It is exported because the name travels out of the rules_test MCP tool in the rule field
-// of every span, and the tests of other packages assert on it.
+// No code outside this package uses it. It is exported for the tests: it is the rule field of
+// every span TestSample returns, and the tests of internal/mcp and the external tests of this
+// package assert on it.
 const AdHocName = "adhoc"
 
 // Rule is a compiled rule: the spec plus ready-made regexes.

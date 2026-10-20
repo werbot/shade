@@ -15,7 +15,7 @@ import (
 // listenArgs are the arguments of the commands that listen on a loopback port: the project
 // they work on and the port they bind.
 type listenArgs struct {
-	project string // resolved directory, never empty
+	project string // existing directory (as given, or the working directory), never empty
 	port    int
 }
 
@@ -80,6 +80,7 @@ func serveHTTP(ctx context.Context, ln net.Listener, h http.Handler) error {
 		// the caller cleans up.
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// A deadline or a listener error changes nothing here: the caller is exiting.
 		_ = srv.Shutdown(shutdown)
 		return nil
 	}
