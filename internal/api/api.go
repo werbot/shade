@@ -28,6 +28,9 @@ func New(o Options) http.Handler {
 	s := &server{open: o.Open}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/rules", s.listRules)
+	mux.HandleFunc("POST /api/rules", s.createRule)
+	mux.HandleFunc("PATCH /api/rules/{name}", s.toggleRule)
+	mux.HandleFunc("DELETE /api/rules/{name}", s.deleteRule)
 	// Any other request under /api/ is the API's own 404, in JSON like every other answer. It takes
 	// every method, so a preflight and a PUT end here too, with no Access-Control-* header.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
