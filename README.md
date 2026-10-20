@@ -307,10 +307,10 @@ the same machine reaches loopback too:
   it carries an `Origin` other than the page's own (`null` included), or a `Sec-Fetch-Site` other
   than `same-origin` or `none`.
 - A `POST` or `PATCH` must be `application/json` (`415` otherwise), and a body over 1 MiB is a
-  `413`.
-- No `Access-Control-*` header is ever sent, so another site cannot read an answer. Every answer
-  of `shade ui`, a refusal and the page included, carries `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: no-referrer` and
+  `413` on the calls that read one: create, toggle and test.
+- No `Access-Control-*` header is ever sent, so another site cannot read an
+  answer. Every answer to a well-formed request, a refusal and the page included,
+  carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
   `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`; answers of the API add
   `Cache-Control: no-store`.
 - Requests are not logged, bodies are kept nowhere and the journal is not written.
