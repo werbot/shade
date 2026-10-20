@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf16"
+
+	"github.com/werbot/shade/internal/rules"
 )
 
 // secret is a value the builtin rules catch in an assignment. It is the constant of the same name
@@ -141,13 +143,28 @@ func TestCandidateTakesTheWholeDefinition(t *testing.T) {
 }
 
 // While a pattern is typed it is broken half of the time, so this is a state of the page and not
-// a fault: the page shows the text under the field.
+// a fault: the page shows the text under the field, and it is the text of rules.TestSample. A
+// missing pattern is refused the way POST /api/rules refuses it: an empty one compiles and finds
+// nothing, and "nothing found" would read as an answer about a rule that cannot be saved.
 func TestCandidateErrorIsABadRequest(t *testing.T) {
 	f := newFixture(t)
-	rec := f.do(http.MethodPost, "/api/test", testBody(t, "x", map[string]any{"pattern": "("}))
-	wantError(t, rec, http.StatusBadRequest)
-	if msg := decodeJSON[map[string]string](t, rec)["error"]; !strings.Contains(msg, "(") {
-		t.Errorf("error = %q, want the reason in it, naming the pattern", msg)
+	_, broken := rules.TestSample(rules.Spec{Pattern: "("}, "x")
+	for _, tc := range []struct {
+		name string
+		rule map[string]any
+		want string
+	}{
+		{"broken pattern", map[string]any{"pattern": "("}, broken.Error()},
+		{"no pattern", map[string]any{}, "pattern is required"},
+		{"empty pattern", map[string]any{"pattern": ""}, "pattern is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := f.do(http.MethodPost, "/api/test", testBody(t, "x", tc.rule))
+			wantError(t, rec, http.StatusBadRequest)
+			if msg := decodeJSON[map[string]string](t, rec)["error"]; msg != tc.want {
+				t.Errorf("error = %q, want %q", msg, tc.want)
+			}
+		})
 	}
 }
 

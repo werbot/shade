@@ -66,6 +66,28 @@ func (f *fixture) engine(t *testing.T) *core.Engine {
 	return e
 }
 
+// refuseEngine makes the fixture fail the test when the handler opens an engine.
+func refuseEngine(t *testing.T, f *fixture) {
+	t.Helper()
+	f.open = func(context.Context) (*core.Engine, error) {
+		t.Error("the engine was opened")
+		return nil, errors.New("not to be opened")
+	}
+}
+
+// recordEngines makes the fixture append every engine the handler opens to opened, in order, to
+// see what became of them when the request ended.
+func recordEngines(f *fixture, opened *[]*core.Engine) {
+	open := f.open
+	f.open = func(ctx context.Context) (*core.Engine, error) {
+		e, err := open(ctx)
+		if err == nil {
+			*opened = append(*opened, e)
+		}
+		return e, err
+	}
+}
+
 // do sends one request to the handler as the page would from the bound address: the Host is that
 // of the listener, and a POST or a PATCH declares JSON even with no body, which is what Guard asks
 // of every one. hdr are header names and values in turn, set last so a test may replace a default.
@@ -216,21 +238,26 @@ func TestOpenFailureIs500(t *testing.T) {
 }
 
 // Every request opens a store of its own, so one that is left open is a file handle lost per
-// request for as long as the UI runs.
+// request for as long as the UI runs. The test of the active rules is the request the page makes
+// most often, at every pause of the typing.
 func TestEngineIsClosedWhenTheRequestEnds(t *testing.T) {
-	f := newFixture(t)
-	var opened *core.Engine
-	open := f.open
-	f.open = func(ctx context.Context) (*core.Engine, error) {
-		e, err := open(ctx)
-		opened = e
-		return e, err
-	}
-	f.do(http.MethodGet, "/api/rules", "")
-	if opened == nil {
-		t.Fatal("the handler opened no engine")
-	}
-	if _, err := opened.Store().ListRules(t.Context(), nil); err == nil {
-		t.Error("the engine still answers after the request: it was not closed")
+	for _, tc := range []struct{ name, method, target, body string }{
+		{"list rules", http.MethodGet, "/api/rules", ""},
+		{"test the active rules", http.MethodPost, "/api/test", `{"text":"x"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			var opened []*core.Engine
+			recordEngines(f, &opened)
+			f.do(tc.method, tc.target, tc.body)
+			if len(opened) == 0 {
+				t.Fatal("the handler opened no engine")
+			}
+			for _, e := range opened {
+				if _, err := e.Store().ListRules(t.Context(), nil); err == nil {
+					t.Error("the engine still answers after the request: it was not closed")
+				}
+			}
+		})
 	}
 }

@@ -88,12 +88,7 @@ var writeCalls = []struct{ name, method, target, body string }{
 func TestWritesCloseTheEngine(t *testing.T) {
 	f := newFixture(t)
 	var opened []*core.Engine
-	open := f.open
-	f.open = func(ctx context.Context) (*core.Engine, error) {
-		e, err := open(ctx)
-		opened = append(opened, e)
-		return e, err
-	}
+	recordEngines(f, &opened)
 	for _, tc := range writeCalls {
 		before := len(opened)
 		f.do(tc.method, tc.target, tc.body)
@@ -120,10 +115,7 @@ func TestRefusedRequestsDoNotOpenTheEngine(t *testing.T) {
 		{"delete: no scope", http.MethodDelete, "/api/rules/x", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f.open = func(context.Context) (*core.Engine, error) {
-				t.Error("the engine was opened")
-				return nil, errors.New("not to be opened")
-			}
+			refuseEngine(t, f)
 			wantError(t, f.do(tc.method, tc.target, tc.body), http.StatusBadRequest)
 		})
 	}

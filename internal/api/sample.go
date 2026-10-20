@@ -23,6 +23,11 @@ type testRequest struct {
 }
 
 // testResponse is the answer: the text the spans index, and the spans.
+//
+// ponytail: the span list is uncapped. A text of 1 MiB made of "a" with the pattern a gives an
+// answer of about 65 MB: the server copes, the page may not. To cap it, cut the byte spans before
+// utf16Spans and add a visible "truncated" field to the answer, which changes the contract (design
+// §4); never cut the list silently.
 type testResponse struct {
 	Text  string     `json:"text"`
 	Spans []spanView `json:"spans"`
@@ -41,6 +46,12 @@ func (s *server) testText(w http.ResponseWriter, r *http.Request) {
 	// A candidate is tried on the raw text and nothing else, as `shade rules test` does: no Guard
 	// and no engine, since there is no rule set to read.
 	if c := req.Rule; c != nil {
+		// An empty pattern compiles and finds nothing, and "nothing found" would read as an answer
+		// about a rule that cannot be saved. POST /api/rules and `shade rules test` refuse it too.
+		if c.Pattern == "" {
+			writeError(w, http.StatusBadRequest, "pattern is required")
+			return
+		}
 		spec := rules.Spec{Type: c.Type, Kind: c.Kind, Pattern: c.Pattern, SecretGroup: c.SecretGroup}
 		spans, err := rules.TestSample(spec, req.Text)
 		if err != nil {
