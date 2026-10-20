@@ -12,35 +12,23 @@ import (
 	"github.com/werbot/shade/internal/rules"
 )
 
-// RuleRow is a row of the rule list: without the compiled regexps, only what
-// what the CLI shows. ProjectID == nil means a global rule.
+// RuleRow is a row of the rule list: without the compiled regexps. Kind, Pattern and
+// SecretGroup are the definition the UI shows; CLI and MCP ignore them.
+// ProjectID == nil means a global rule.
 type RuleRow struct {
-	Name      string
-	Type      string
-	Enabled   bool
-	Builtin   bool
-	ProjectID *int64
+	Name        string
+	Type        string
+	Kind        string
+	Pattern     string
+	SecretGroup int
+	Enabled     bool
+	Builtin     bool
+	ProjectID   *int64
 }
 
 // ruleFields is the projection of a rules row in the compile rules of Spec.
 const ruleFields = `name, type, kind, pattern, secret_group, keywords,
 	entropy_min, validator, allowlist, order_idx, enabled, builtin`
-
-// ruleColumns and ruleValues are the columns AddRule manages. package_id
-// is not filled: rule packages will appear in phase 3.
-const (
-	ruleColumns = `project_id, name, type, kind, pattern, secret_group, keywords,
-		entropy_min, validator, allowlist, order_idx, enabled, builtin, updated_at`
-	ruleValues = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`
-	// ruleAssign does not touch name and project_id: they are the key of the row, and updating
-	// must not move a rule between scopes.
-	ruleAssign = `type=excluded.type, kind=excluded.kind, pattern=excluded.pattern,
-		secret_group=excluded.secret_group, keywords=excluded.keywords,
-		entropy_min=excluded.entropy_min, validator=excluded.validator,
-		allowlist=excluded.allowlist, order_idx=excluded.order_idx,
-		enabled=excluded.enabled, builtin=excluded.builtin,
-		updated_at=excluded.updated_at`
-)
 
 // RulesForProject collects the rules applicable to the project: the global ones plus
 // the rules of the project itself. To avoid fetching them with two queries, the project ones are read
@@ -79,10 +67,11 @@ func (s *Store) RulesForProject(ctx context.Context, projectID int64) ([]rules.R
 	return sortedRules(byName), nil
 }
 
-// ListRules returns rule rows for the CLI. projectID == nil means all rules
-// the store, otherwise the global ones plus the rules of the given project.
+// ListRules returns rule rows for the CLI, the MCP rules_list tool, the UI and SeedBuiltin.
+// projectID == nil means all the rules of the store, otherwise the global ones plus the rules of
+// the given project.
 func (s *Store) ListRules(ctx context.Context, projectID *int64) ([]RuleRow, error) {
-	q := `SELECT name, type, enabled, builtin, project_id FROM rules`
+	q := `SELECT name, type, kind, pattern, secret_group, enabled, builtin, project_id FROM rules`
 	var args []any
 	if projectID != nil {
 		q += ` WHERE project_id IS NULL OR project_id = ?`
@@ -102,7 +91,8 @@ func (s *Store) ListRules(ctx context.Context, projectID *int64) ([]RuleRow, err
 			row RuleRow
 			pid sql.NullInt64
 		)
-		if err := rows.Scan(&row.Name, &row.Type, &row.Enabled, &row.Builtin, &pid); err != nil {
+		if err := rows.Scan(&row.Name, &row.Type, &row.Kind, &row.Pattern, &row.SecretGroup,
+			&row.Enabled, &row.Builtin, &pid); err != nil {
 			return nil, fmt.Errorf("listing rules: %w", err)
 		}
 		if pid.Valid {
@@ -121,53 +111,16 @@ func (s *Store) ListRules(ctx context.Context, projectID *int64) ([]RuleRow, err
 // Adding a rule with the same name in the same scope again updates
 // the row: uniqueness is held by partial indexes, and a bare INSERT would fail on
 // them an error that the user would not understand. The exception is a builtin rule:
-// its row is not updated but rejected (see below).
+// its row is not updated but rejected (see refuseBuiltin). A rule the engine cannot compile
+// is rejected too (ErrInvalidRule).
 func (s *Store) AddRule(ctx context.Context, projectID *int64, r rules.Spec) error {
-	if r.ID == "" {
-		return errors.New("rule name is not set")
-	}
-	keywords, err := jsonList(r.Keywords)
-	if err != nil {
-		return fmt.Errorf("rule %q: keywords: %w", r.ID, err)
-	}
-	allowlist, err := jsonList(r.Allowlist)
-	if err != nil {
-		return fmt.Errorf("rule %q: allowlist: %w", r.ID, err)
-	}
-	// The upsert below spares no builtin row: ruleAssign carries over pattern,
-	// type, order_idx and resets builtin, while SeedBuiltin no longer has the original
-	// would return — it skips taken names. A rule that used to catch a secret
-	// dies for good, and the value leaves open. The check lives here, and not
-	// into the CLI: every caller meets in AddRule — add, import and SeedBuiltin.
-	var builtin bool
-	cond, args := scopeCond(projectID)
-	err = s.db.QueryRowContext(ctx,
-		`SELECT builtin FROM rules WHERE name = ? AND `+cond,
-		append([]any{r.ID}, args...)...).Scan(&builtin)
-	switch {
-	case err == nil && builtin:
-		return builtinRuleError{fmt.Sprintf("rule %q is builtin: it can be disabled, but not replaced — pick another name", r.ID)}
-	case err != nil && !errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("rule %q: %w", r.ID, err)
-	}
-	// The conflict target must match the partial index together with its
-	// WHERE — otherwise SQLite answers "ON CONFLICT clause does not match any
-	// PRIMARY KEY or UNIQUE constraint", and the scopes need different targets.
-	target := `ON CONFLICT(name) WHERE project_id IS NULL`
-	if projectID != nil {
-		target = `ON CONFLICT(project_id, name) WHERE project_id IS NOT NULL`
-	}
-	q := `INSERT INTO rules(` + ruleColumns + `) VALUES(` + ruleValues + `) ` +
-		target + ` DO UPDATE SET ` + ruleAssign
+	return s.writeRule(ctx, projectID, r, true)
+}
 
-	// nil in the argument means NULL, that is a global rule.
-	_, err = s.db.ExecContext(ctx, q, projectID, r.ID, r.Type, r.Kind,
-		r.Pattern, r.SecretGroup, keywords, r.EntropyMin, r.Validator, allowlist,
-		r.Order, r.Enabled, r.Builtin, time.Now().Unix())
-	if err != nil {
-		return fmt.Errorf("rule %q: %w", r.ID, err)
-	}
-	return nil
+// CreateRule inserts a rule and never overwrites: a taken name in the scope, including
+// a name held by a builtin rule, is ErrRuleExists.
+func (s *Store) CreateRule(ctx context.Context, projectID *int64, r rules.Spec) error {
+	return s.writeRule(ctx, projectID, r, false)
 }
 
 // SetRuleEnabled enables and disables a rule. A builtin rule can only
@@ -186,7 +139,7 @@ func (s *Store) SetRuleEnabled(ctx context.Context, projectID *int64, name strin
 	}
 	// A typo in a rule name must not look like a successful edit.
 	if n == 0 {
-		return fmt.Errorf("rule %q not found", name)
+		return ruleError{fmt.Sprintf("rule %q not found", name), ErrRuleNotFound}
 	}
 	return nil
 }
@@ -219,11 +172,11 @@ func (s *Store) RemoveRule(ctx context.Context, projectID *int64, name string) e
 		append([]any{name}, args...)...).Scan(&builtin)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("rule %q not found", name)
+		return ruleError{fmt.Sprintf("rule %q not found", name), ErrRuleNotFound}
 	case err != nil:
 		return fmt.Errorf("rule %q: %w", name, err)
 	case builtin:
-		return builtinRuleError{fmt.Sprintf("rule %q is builtin: it can be disabled, but not deleted", name)}
+		return ruleError{fmt.Sprintf("rule %q is builtin: it can be disabled, but not deleted", name), ErrBuiltinRule}
 	default:
 		// The branch is unreachable outside a race: the row can lose builtin = 0 between
 		// DELETE and SELECT. A safety net so that such a "not deleted" looks

@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-// serveProc is a running `shade serve` subprocess with its captured streams. Wait is guarded
-// by a Once so a test that already waited does not race its own cleanup.
+// serveProc is a running `shade serve` or `shade ui` subprocess with its captured streams. Wait
+// is guarded by a Once so a test that already waited does not race its own cleanup.
 type serveProc struct {
 	cmd  *exec.Cmd
 	out  *lockedBuffer
@@ -24,19 +24,20 @@ type serveProc struct {
 	once sync.Once
 }
 
-// startServe launches the built CLI as `shade serve --project dir --port 0`. Port 0 lets the
-// OS choose a free port, so a run never collides with another. The process is stopped and
-// reaped on cleanup, with a bounded wait.
-func startServe(t *testing.T, bin, home, dir string) *serveProc {
+// startMode launches the built CLI as `shade <mode> --project dir --port 0`, mode being a
+// command that listens on a loopback port: serve or ui. Port 0 lets the OS choose a free port,
+// so a run never collides with another. The process is stopped and reaped on cleanup, with a
+// bounded wait.
+func startMode(t *testing.T, bin, mode, home, dir string) *serveProc {
 	t.Helper()
 	p := &serveProc{out: &lockedBuffer{}, err: &lockedBuffer{}}
-	p.cmd = exec.Command(bin, "serve", "--project", dir, "--port", "0")
+	p.cmd = exec.Command(bin, mode, "--project", dir, "--port", "0")
 	p.cmd.Dir = dir
 	p.cmd.Env = mcpEnv(home)
 	p.cmd.Stdout = p.out
 	p.cmd.Stderr = p.err
 	if err := p.cmd.Start(); err != nil {
-		t.Fatalf("starting serve: %v", err)
+		t.Fatalf("starting %s: %v", mode, err)
 	}
 	t.Cleanup(func() {
 		if p.cmd.Process != nil {
@@ -84,7 +85,7 @@ func waitForLine(t *testing.T, b *lockedBuffer, d time.Duration) string {
 func TestServePrintsTheWrapLine(t *testing.T) {
 	bin := buildShade(t)
 	home, dir := t.TempDir(), gitDir(t)
-	p := startServe(t, bin, home, dir)
+	p := startMode(t, bin, "serve", home, dir)
 
 	line := waitForLine(t, p.out, 10*time.Second)
 	const prefix = "export ANTHROPIC_BASE_URL=http://127.0.0.1:"
@@ -114,7 +115,7 @@ func TestServeClearsItsMarkerOnSignals(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
 		t.Run(sig.String(), func(t *testing.T) {
 			home, dir := t.TempDir(), gitDir(t)
-			p := startServe(t, bin, home, dir)
+			p := startMode(t, bin, "serve", home, dir)
 			line := waitForLine(t, p.out, 10*time.Second)
 
 			proj, st := testStore(t, home, dir)

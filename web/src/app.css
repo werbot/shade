@@ -1,0 +1,108 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --surface: #f6f7f9;
+  --fg: #1b1f24;
+  --muted: #57606a;
+  --border: #d0d7de;
+  /* A field's background is the page's, so its border alone shows it: 3:1 against --bg at least. */
+  --control-border: #8c959f;
+  --accent: #0b57d0;
+  --accent-fg: #ffffff;
+  --danger: #b42318;
+  --danger-fg: #ffffff;
+  --mark: #fff1a8;
+  --mark-fg: #1b1f24;
+  --gap: 1rem;
+  --gap-s: 0.5rem;
+  --radius: 6px;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--sans);
+  line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216;
+    --surface: #171b21;
+    --fg: #e6e9ed;
+    --muted: #9aa4af;
+    --border: #39414b;
+    --control-border: #6e7681;
+    --accent: #8ab4f8;
+    --accent-fg: #0f1216;
+    --danger: #f28b82;
+    --danger-fg: #0f1216;
+    --mark: #5c4a00;
+    --mark-fg: #fff4c2;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  /* A pattern or a path has no spaces to break at; it wraps rather than widen the page. */
+  overflow-wrap: anywhere;
+}
+
+h1,
+h2 {
+  margin: 0 0 var(--gap-s);
+  line-height: 1.2;
+}
+
+h1 {
+  font-size: 1.25rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+}
+
+code {
+  font-family: var(--mono);
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input:not([type="checkbox"], [type="radio"]),
+select,
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+button {
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.error {
+  margin: 0;
+  color: var(--danger);
+}

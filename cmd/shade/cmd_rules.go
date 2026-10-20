@@ -159,12 +159,6 @@ func runRulesAdd(args []string, stdio IO) int {
 		ID: ruleName, Type: ruleType, Kind: kind, Pattern: pattern,
 		SecretGroup: secretGroup, Enabled: true,
 	}
-	// Compile before writing. The reverse order would leave a row in the database on
-	// which RulesForProject fails entirely: one bad row kills the whole
-	// project rule set, and it is only fixed by editing the database by hand.
-	if _, err := rules.Compile(spec); err != nil {
-		return fail(stdio, name, 1, err)
-	}
 
 	ctx := context.Background()
 	e, err := openEngine(ctx, "")

@@ -113,25 +113,15 @@ func runRulesTest(args []string, stdio IO) int {
 	if pattern == "" {
 		return fail(stdio, name, 2, errors.New("--pattern is required"))
 	}
-	// A rule type and kind are required by Compile, but the spec declares for the command
-	// only --pattern, --kind and --sample: the rest is taken by default.
-	if kind == "" {
-		kind = "regex"
-	}
-	if ruleType == "" {
-		ruleType = "SECRET"
-	}
 
-	rule, err := rules.Compile(rules.Spec{
-		ID: rules.AdHocName, Type: ruleType, Kind: kind, Pattern: pattern, Enabled: true,
-	})
-	if err != nil {
-		return fail(stdio, name, 1, err)
-	}
 	text, err := readSample(pos, sample, stdio.In)
 	if err != nil {
 		return fail(stdio, name, 1, err)
 	}
-	printSpans(stdio.Out, text, rules.Detect(text, []rules.Rule{rule}))
+	spans, err := rules.TestSample(rules.Spec{Type: ruleType, Kind: kind, Pattern: pattern}, text)
+	if err != nil {
+		return fail(stdio, name, 1, err)
+	}
+	printSpans(stdio.Out, text, spans)
 	return 0
 }

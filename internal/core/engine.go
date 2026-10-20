@@ -18,7 +18,7 @@ type Engine struct {
 	store   *store.Store
 	project store.Project
 	ruleSet []rules.Rule
-	// adapter — the source of the call (cli | hook | mcp | proxy). It is written to the journal
+	// adapter — the source of the call (cli | hook | mcp | proxy | ui). It is written to the journal
 	// together with the unresolved placeholder: from it one can see which adapter
 	// let a token out whose value is not in the store.
 	adapter string
