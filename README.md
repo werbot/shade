@@ -28,6 +28,7 @@ phone: +1 415 555 0132
 - [Claude Code](#-claude-code)
 - [Proxy](#-proxy)
 - [MCP](#-mcp)
+- [Web UI](#-web-ui)
 - [Architecture](#-architecture)
 - [Install](#-install)
 - [Quick start](#-quick-start)
@@ -176,7 +177,7 @@ Two limits are worth knowing before you rely on it:
   token it mangled is still matched; the other direction — tool output, which the
   outside world writes — is only ever anonymized.
 
-## 🛰️ Proxy
+## 📡 Proxy
 
 A hook cannot rewrite the prompt or the system prompt, so `shade serve` closes that gap:
 it is a local HTTP proxy that anonymizes the whole request on the way out and puts the real
@@ -257,23 +258,90 @@ the one tool that returns real values: it restores whatever text it is handed. U
 
 Diagnostics go to stderr; stdout carries the protocol and nothing else.
 
+## 🌐 Web UI
+
+`shade ui` serves a page for the rules, so a rule can be written and tried in a browser
+instead of through the CLI. It prints the address and waits; it does not open the browser:
+
+```
+$ shade ui
+http://127.0.0.1:8788
+```
+
+It listens on `127.0.0.1` only (default port 8788, `--port N` to change it, `--port 0` to let
+the OS choose — the printed address always names the port actually taken). Like `serve`, it
+resolves the project once, at startup, from `--project DIR` or the working directory. It is not
+a proxy, and `shade serve` serves no page. The page is built into the binary by `make build`;
+see [Install](#-install).
+
+The page is one screen, Rules:
+
+- **List.** The global rules and the rules of the project, the builtin and the disabled ones
+  included, each with its type, scope, kind and pattern. Any rule can be switched on and off; a
+  rule that is not builtin can be deleted, after a second click that confirms it.
+- **New rule.** The fields of `shade rules add`: name, type, kind (`regex` or `literal`),
+  pattern, secret group and scope — this project by default, or global. A pattern that does not
+  compile is refused with the engine's own message, and so is a name already taken in the
+  scope, where `shade rules add` would rewrite the rule (unless it is builtin).
+- **Live test.** Paste a text and the matches are highlighted, each labelled with the rule that
+  found it. While the form holds a pattern, the page tries that pattern alone, unsaved, and the
+  label is `adhoc`; with the form empty it tries all the active rules, as `shade test` does. A
+  test stores nothing.
+
+Rules live in the same store as `shade rules`: a rule created on the page shows in `shade rules
+list` and applies in the hook and the proxy from their next call; one added from the CLI shows
+on the page after a reload.
+
+**Protection.** The page serves no value from `entities` — only rule definitions, and the result
+of a test over the text the browser itself sent — which is why this slice has no token. What it
+has is a set of checks that keep the pages of other sites away from the port, since a browser on
+the same machine reaches loopback too:
+
+- `Host` must be `127.0.0.1:<port>` or `localhost:<port>`, with the port the server bound;
+  anything else is a `403`. That stops DNS rebinding, where a page of another site arrives under
+  its own name. Only on port 80, where browsers leave the port out, do the bare `127.0.0.1` and
+  `localhost` pass too. It also means an SSH tunnel must keep the server's port as its local one
+  (`ssh -L 8788:127.0.0.1:8788 host`); with another, every request is a `403`.
+- A request that changes something — any method but `GET`, `HEAD` and `OPTIONS` — is a `403` if
+  it carries an `Origin` other than the page's own (`null` included), or a `Sec-Fetch-Site` other
+  than `same-origin` or `none`.
+- A `POST` or `PATCH` must be `application/json` (`415` otherwise), and a body over 1 MiB is a
+  `413`.
+- No `Access-Control-*` header is ever sent, so another site cannot read an answer. Every answer
+  carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
+  `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`; answers of the API add
+  `Cache-Control: no-store`.
+- Requests are not logged, bodies are kept nowhere and the journal is not written.
+
+**Residual risk.** The checks are aimed at browsers. A local process can send any `Host` and
+`Origin` it likes, so any process on the machine that can reach the port — yours, or another
+user's on a shared machine — can read the rules, create new ones, switch any of them off and
+delete those that are not builtin. Patterns are in clear text, and the pattern of a `literal`
+rule may be the secret itself; switching rules off weakens what the hook and the proxy
+anonymize. A token becomes mandatory before the page can show a stored value (`reveal`, planned
+for the Entities screen).
+
 ## 🧱 Architecture
 
 ```mermaid
 flowchart TB
-    CLI["cmd/shade<br/>anon · deanon · hook · init · mcp · rules · entities · audit · test · doctor · version"]
+    CLI["cmd/shade<br/>anon · deanon · hook · init · mcp · rules · entities · audit · test · doctor · ui · version"]
     CLI --> Core["internal/core<br/>Engine: Anonymize · Restore · Scan"]
     CLI --> Hook["internal/hook<br/>Claude Code events → responses"]
     CLI --> MCP["internal/mcp<br/>six tools · shade://directive"]
     CLI --> Set["internal/settings<br/>settings.json · plugin files"]
+    CLI --> API["internal/api<br/>rules REST · live test · loopback guard"]
+    CLI --> Web["web<br/>the built page, embedded"]
     Hook --> Core
     Hook --> Dir["internal/directive<br/>the model directive"]
     MCP --> Core
     MCP --> Dir
+    API --> Core
     Core --> Rules["internal/rules<br/>compile · detect · merge · validators"]
     Core --> PH["internal/placeholder<br/>format · find · guard"]
     Core --> Store["internal/store<br/>SQLite, projects, entities, rules"]
     Core --> Cfg["internal/config<br/>layered TOML"]
+    API --> Rules
     Store --> Crypt["internal/crypt<br/>AES-256-GCM · HMAC-SHA256"]
 ```
 
@@ -284,6 +352,8 @@ flowchart TB
 | `internal/hook` | The Claude Code adapter: event payloads, per-event responses |
 | `internal/jsonwalk` | Shared traversal that rewrites a JSON document's strings, keeping its shape |
 | `internal/mcp` | The MCP adapter: the directive resource, and the tools the model calls |
+| `internal/api` | The HTTP handler of `shade ui`: the rules endpoints, the live test, the loopback guard, the page |
+| `web` | The Svelte page of `shade ui` (sources in `web/src`) and `embed.go`, which embeds its build from `dist/` |
 | `internal/settings` | Claude Code `settings.json`: load, merge, diff, and the plugin files |
 | `internal/directive` | The one text that tells the model how to treat the tokens |
 | `internal/rules` | Compiles rule specs, finds matches, merges spans, runs validators |
@@ -299,15 +369,17 @@ own payload.
 
 ## 📦 Install
 
-Requires Go 1.27.1 or newer.
+Requires Go 1.27.1 or newer, and bun 1.3.11 to build the page of `shade ui`.
 
 ```
-make build          # CGO_ENABLED=0 go build -o shade ./cmd/shade
+make build          # builds the page with bun, then CGO_ENABLED=0 go build -o shade ./cmd/shade
 ./shade version
 ```
 
-The build is pure Go end to end — SQLite comes from `modernc.org/sqlite`, so
-`CGO_ENABLED=0` produces a static binary.
+The binary is pure Go end to end — SQLite comes from `modernc.org/sqlite`, so
+`CGO_ENABLED=0` produces a static binary. bun only builds the page, which the binary embeds
+as files. Without bun a plain `go build ./cmd/shade` still works, but it leaves the page out:
+every command runs except `shade ui`, which exits `1` and asks for `make build`.
 
 There are no releases or prebuilt packages yet; build from source.
 
@@ -371,6 +443,7 @@ takes neither.
 | `shade init [--global] [--dry-run] [--keep-old-hook]` | Install the Claude Code hooks and skills: generate the plugin and wire it into the settings |
 | `shade mcp [--project DIR]` | Serve the MCP protocol on stdio for an MCP client |
 | `shade serve [--project DIR] [--port N]` | Run the anonymizing HTTP proxy for a coding agent on the loopback interface (default port 8787). It serves the Anthropic Messages shape (`/v1/messages`, `/v1/messages/count_tokens`) and the OpenAI Chat Completions shape (`/v1/chat/completions`), anonymizing each request and restoring each answer |
+| `shade ui [--project DIR] [--port N]` | Serve the web UI — a page for the rules — on the loopback interface (default port 8788) and print its address. See [Web UI](#-web-ui) |
 | `shade doctor` | Report the state of the environment without modifying it |
 | `shade test [--rules NAME] [--sample TEXT] [FILE]` | Run the active rule set against a sample, no writes |
 | `shade rules list` | List rules of the scope |
@@ -417,6 +490,9 @@ the next call.
 `shade serve` is the third exception: it has no code `3` either. It streams an
 answer or sanitizes an error, and under `fail_closed` a restore it cannot complete
 becomes a `502` the client can retry, never a process exit.
+
+`shade ui` has no code `3` either. SIGINT and SIGTERM stop it with `0`; a port that is already
+taken, or a binary built without the page, is `1`.
 
 An auxiliary write failure never changes the code: if the hit counter or the
 journal cannot be written, the result is still delivered and the failure is
@@ -565,6 +641,8 @@ a token would substitute a value where none was requested.
   than by discipline.
 - **Nothing sensitive goes to stderr or stdout unredacted.** Only `anon`'s output
   reaches stdout, and its secrets are already placeholders by then.
+- **The web UI has no token.** `shade ui` guards its loopback port against the pages of
+  other sites, not against a local process. See [Web UI](#-web-ui).
 
 Retention is per project and explicit: `shade entities prune` drops entities by
 last-seen age. A pruned value is unrecoverable, since the plaintext exists only
@@ -573,14 +651,22 @@ in `value_enc`.
 ## 🧪 Development
 
 ```
-make test    # go test ./...
-make lint    # go vet ./... plus a gofmt check
-make build
+make test    # the page is built first; then go test ./... and bun test
+make lint    # go vet ./... plus a gofmt check, and svelte-check on the page
+make build   # the page, then the binary
+make web     # the page alone, into web/dist
 ```
+
+All four need bun 1.3.11. Plain `go build`, `go vet` and `go test` need neither bun nor a
+built page (the tracked `web/dist/.gitkeep` keeps the embed valid); the process tests of
+`shade ui` skip themselves until `make web` has run. The page has no dev server: change
+`web/src`, run `make build` and start `./shade ui` again.
 
 Tests live next to the code they cover and are mostly end-to-end: the CLI suite
 drives real commands against a temporary `SHADE_HOME`, and the rule tests run
-against a corpus rather than single strings.
+against a corpus rather than single strings. The logic of the page that needs no
+browser — turning spans into segments, building the API requests, reading its errors — is
+covered by `bun test`.
 
 Dependencies are deliberately few — `github.com/BurntSushi/toml` for config and
 rules, `modernc.org/sqlite` for a CGO-free SQLite driver. Everything else comes
@@ -589,7 +675,8 @@ from the standard library.
 ## 📌 Status
 
 Phases 1–4 are complete — the core and the CLI, the Claude Code hook adapter, the MCP
-adapter and the skills, then the HTTP proxy that wraps Claude Code end to end. The rest is
+adapter and the skills, then the HTTP proxy that wraps Claude Code end to end. Phase 5, the
+web UI, is under way: its first slice, the Rules screen of `shade ui`, is done. The rest is
 ahead of us; the code is already sliced for it.
 
 - [x] Core engine — `Anonymize`, `Restore`, `Scan`
@@ -603,8 +690,9 @@ ahead of us; the code is already sliced for it.
 - [x] MCP adapter — `shade mcp` serves six tools and the `shade://directive` resource over stdio
 - [x] MCP `scan` tool — reports the types and the rules that found them, never the fragment or the offset
 - [x] Proxy adapter — `shade serve` wraps Claude Code through `ANTHROPIC_BASE_URL`, anonymizing the whole request and restoring the streamed answer, with the `prompt_gate = "auto"` liveness marker
+- [x] Web UI, the Rules screen — `shade ui` lists the rules, creates, switches and deletes them, and tests a text live; the page is embedded in the binary
 - [ ] Rule packages — the `packages` table exists; nothing writes to it yet
-- [ ] Usage UI — `rule_hits` is written on every anonymization; nothing reads it yet
+- [ ] Usage UI — the other screens (Entities, Audit, Settings), the UI token that has to arrive with `reveal`, editing and ordering of rules, and the `keywords`, `allowlist`, `entropy_min` and `validator` fields of a rule. `rule_hits` is written on every anonymization; nothing reads it yet
 - [x] Streaming mode and LLM provider integration — `stream_mode`, `upstream` and `api_key_env` are consumed by `shade serve`; it serves both the Anthropic Messages shape and the OpenAI Chat Completions shape (streamed and non-streamed)
 
 ## 📄 License
