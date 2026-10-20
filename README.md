@@ -297,18 +297,19 @@ of a test over the text the browser itself sent — which is why this slice has 
 has is a set of checks that keep the pages of other sites away from the port, since a browser on
 the same machine reaches loopback too:
 
-- `Host` must be `127.0.0.1:<port>` or `localhost:<port>`, with the port the server bound;
-  anything else is a `403`. That stops DNS rebinding, where a page of another site arrives under
-  its own name. Only on port 80, where browsers leave the port out, do the bare `127.0.0.1` and
-  `localhost` pass too. It also means an SSH tunnel must keep the server's port as its local one
-  (`ssh -L 8788:127.0.0.1:8788 host`); with another, every request is a `403`.
+- `Host` must be `127.0.0.1:<port>` or `localhost:<port>`, with the port the server bound; a
+  `Host` that parses but is none of these is a `403`. That stops DNS rebinding, where a page of
+  another site arrives under its own name. Only on port 80, where browsers leave the port out,
+  do the bare `127.0.0.1` and `localhost` pass too. It also means an SSH tunnel must keep the
+  server's port as its local one (`ssh -L 8788:127.0.0.1:8788 host`); with another, every
+  request is a `403`.
 - A request that changes something — any method but `GET`, `HEAD` and `OPTIONS` — is a `403` if
   it carries an `Origin` other than the page's own (`null` included), or a `Sec-Fetch-Site` other
   than `same-origin` or `none`.
 - A `POST` or `PATCH` must be `application/json` (`415` otherwise), and a body over 1 MiB is a
   `413`.
 - No `Access-Control-*` header is ever sent, so another site cannot read an answer. Every answer
-  carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
+  of the handler carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
   `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`; answers of the API add
   `Cache-Control: no-store`.
 - Requests are not logged, bodies are kept nowhere and the journal is not written.
@@ -325,10 +326,11 @@ for the Entities screen).
 
 ```mermaid
 flowchart TB
-    CLI["cmd/shade<br/>anon · deanon · hook · init · mcp · rules · entities · audit · test · doctor · ui · version"]
+    CLI["cmd/shade<br/>anon · deanon · hook · init · mcp · serve · rules · entities · audit · test · doctor · ui · version"]
     CLI --> Core["internal/core<br/>Engine: Anonymize · Restore · Scan"]
     CLI --> Hook["internal/hook<br/>Claude Code events → responses"]
     CLI --> MCP["internal/mcp<br/>six tools · shade://directive"]
+    CLI --> Proxy["internal/proxy<br/>HTTP proxy · streamed restore"]
     CLI --> Set["internal/settings<br/>settings.json · plugin files"]
     CLI --> API["internal/api<br/>rules REST · live test · loopback guard"]
     CLI --> Web["web<br/>the built page, embedded"]
@@ -336,6 +338,8 @@ flowchart TB
     Hook --> Dir["internal/directive<br/>the model directive"]
     MCP --> Core
     MCP --> Dir
+    Proxy --> Core
+    Proxy --> Dir
     API --> Core
     Core --> Rules["internal/rules<br/>compile · detect · merge · validators"]
     Core --> PH["internal/placeholder<br/>format · find · guard"]
@@ -352,9 +356,11 @@ flowchart TB
 | `internal/hook` | The Claude Code adapter: event payloads, per-event responses |
 | `internal/jsonwalk` | Shared traversal that rewrites a JSON document's strings, keeping its shape |
 | `internal/mcp` | The MCP adapter: the directive resource, and the tools the model calls |
+| `internal/proxy` | The proxy adapter behind `shade serve`: anonymizes the request, restores the answer |
 | `internal/api` | The HTTP handler of `shade ui`: the rules endpoints, the live test, the loopback guard, the page |
 | `web` | The Svelte page of `shade ui` (sources in `web/src`) and `embed.go`, which embeds its build from `dist/` |
 | `internal/settings` | Claude Code `settings.json`: load, merge, diff, and the plugin files |
+| `internal/skills` | The Claude Code skills `shade init` installs: the placeholder contract and the guide to writing rules |
 | `internal/directive` | The one text that tells the model how to treat the tokens |
 | `internal/rules` | Compiles rule specs, finds matches, merges spans, runs validators |
 | `internal/placeholder` | The `<TYPE_N>` format, tolerant token search, the guard |
@@ -657,20 +663,20 @@ make build   # the page, then the binary
 make web     # the page alone, into web/dist
 ```
 
-All four need bun 1.3.11. Plain `go build`, `go vet` and `go test` need neither bun nor a
-built page (the tracked `web/dist/.gitkeep` keeps the embed valid); the process tests of
-`shade ui` skip themselves until `make web` has run. The page has no dev server: change
-`web/src`, run `make build` and start `./shade ui` again.
+All four need bun (see [Install](#-install)). Plain `go build`, `go vet` and `go test` need
+neither bun nor a built page (the tracked `web/dist/.gitkeep` keeps the embed valid); the
+process tests of `shade ui` skip themselves until `make web` has run. The page has no dev
+server: change `web/src`, run `make build` and start `./shade ui` again.
 
 Tests live next to the code they cover and are mostly end-to-end: the CLI suite
 drives real commands against a temporary `SHADE_HOME`, and the rule tests run
-against a corpus rather than single strings. The logic of the page that needs no
-browser — turning spans into segments, building the API requests, reading its errors — is
-covered by `bun test`.
+against a corpus rather than single strings. The page logic that needs no browser is covered
+by `bun test`.
 
 Dependencies are deliberately few — `github.com/BurntSushi/toml` for config and
-rules, `modernc.org/sqlite` for a CGO-free SQLite driver. Everything else comes
-from the standard library.
+rules, `github.com/modelcontextprotocol/go-sdk` for the MCP server, `modernc.org/sqlite`
+for a CGO-free SQLite driver. Everything else in the Go code comes from the standard
+library. The page's toolchain is used at build time only and is listed in `web/package.json`.
 
 ## 📌 Status
 
