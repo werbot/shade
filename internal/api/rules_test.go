@@ -41,6 +41,11 @@ func TestListRules(t *testing.T) {
 	if err := e.Store().AddRule(t.Context(), &pid, acme); err != nil {
 		t.Fatal(err)
 	}
+	// A rule the test makes itself and leaves disabled, not one of the seed data that happens to be.
+	paused := rules.Spec{ID: "paused", Type: "TICKET", Kind: "regex", Pattern: `P-\d+`}
+	if err := e.Store().AddRule(t.Context(), &pid, paused); err != nil {
+		t.Fatal(err)
+	}
 
 	rec := f.do(http.MethodGet, "/api/rules", "")
 	if rec.Code != http.StatusOK {
@@ -66,7 +71,11 @@ func TestListRules(t *testing.T) {
 	if !slices.Contains(list.Rules, want) {
 		t.Errorf("rules lack %+v", want)
 	}
-	var seenProject, seenBuiltin, seenDisabled bool
+	wantPaused := ruleWire{Name: "paused", Type: "TICKET", Kind: "regex", Pattern: `P-\d+`, Scope: "project"}
+	if !slices.Contains(list.Rules, wantPaused) {
+		t.Errorf("rules lack %+v: the list must carry the disabled ones", wantPaused)
+	}
+	var seenProject, seenBuiltin bool
 	for _, r := range list.Rules {
 		if r.Scope == "project" {
 			seenProject = true
@@ -75,7 +84,6 @@ func TestListRules(t *testing.T) {
 		}
 		if r.Builtin {
 			seenBuiltin = true
-			seenDisabled = seenDisabled || !r.Enabled
 			if r.Scope != "global" {
 				t.Errorf("builtin rule %q has scope %q, want global", r.Name, r.Scope)
 			}
@@ -83,9 +91,6 @@ func TestListRules(t *testing.T) {
 	}
 	if !seenBuiltin {
 		t.Error("no builtin rule is listed")
-	}
-	if !seenDisabled {
-		t.Error("no disabled builtin rule is listed: the list must carry the disabled ones")
 	}
 }
 

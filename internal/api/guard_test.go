@@ -36,7 +36,8 @@ func TestGuardRefusesAForeignHost(t *testing.T) {
 }
 
 // A browser leaves the default port out of Host and Origin, so on port 80 the names arrive
-// bare. On every other port they stay refused, which TestGuardRefusesAForeignHost pins.
+// bare. On every other port they stay refused: TestGuardRefusesAForeignHost pins it for the port
+// of the tests, and TestGuardRefusesTheBareHostOffPort80 for the ports that look like 80.
 func TestGuardOnPort80AcceptsTheBareHost(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, host string
@@ -52,6 +53,9 @@ func TestGuardOnPort80AcceptsTheBareHost(t *testing.T) {
 		{"a mutation from the other name", http.MethodPost, "127.0.0.1", []string{"http://localhost"}, http.StatusForbidden},
 		{"another name", http.MethodGet, "evil.example", nil, http.StatusForbidden},
 		{"another port", http.MethodGet, "127.0.0.1:81", nil, http.StatusForbidden},
+		{"the name as a subdomain", http.MethodGet, "localhost.evil.example", nil, http.StatusForbidden},
+		{"a trailing dot", http.MethodGet, "localhost.", nil, http.StatusForbidden},
+		{"another letter case", http.MethodGet, "LOCALHOST", nil, http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hdr := http.Header{"Content-Type": {"application/json"}}
@@ -60,6 +64,17 @@ func TestGuardOnPort80AcceptsTheBareHost(t *testing.T) {
 			}
 			rec, p := throughGuardOn(80, guardRequest(tc.method, "/api/rules", tc.host, hdr))
 			wantAnswer(t, rec, p, tc.status)
+		})
+	}
+}
+
+// Only port 80 takes the bare names. 0 is the port a listener asked the OS for, 180 and 8080 end in
+// the digits of 80: none of them may be mistaken for it.
+func TestGuardRefusesTheBareHostOffPort80(t *testing.T) {
+	for _, port := range []int{0, 180, 8080} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			rec, p := throughGuardOn(port, guardRequest(http.MethodGet, "/api/rules", "127.0.0.1", nil))
+			wantAnswer(t, rec, p, http.StatusForbidden)
 		})
 	}
 }

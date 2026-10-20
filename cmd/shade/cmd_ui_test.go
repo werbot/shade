@@ -32,7 +32,7 @@ func needsPage(t *testing.T) {
 }
 
 // startUI launches `shade ui` on a port the OS chooses and returns the process with the address
-// it printed.
+// it printed. The test is skipped when the page is not built (see needsPage).
 func startUI(t *testing.T, home, dir string) (*serveProc, string) {
 	t.Helper()
 	needsPage(t)
@@ -97,9 +97,8 @@ func TestPageBuiltRefusesAnEmptyFS(t *testing.T) {
 	}
 }
 
-// TestUIRejectsBadArguments — a bad call is exit 2 with the culprit named, before the page is
-// looked at and before a port is bound. The name is what tells this exit 2 from the one an
-// unregistered command gets.
+// TestUIRejectsBadArguments — a bad call is exit 2 with the culprit named and nothing on stdout.
+// The name is what tells this exit 2 from the one an unregistered command gets.
 func TestUIRejectsBadArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -133,11 +132,15 @@ func TestUIPrintsItsAddress(t *testing.T) {
 	if !regexp.MustCompile(`^http://127\.0\.0\.1:\d+$`).MatchString(addr) {
 		t.Fatalf("stdout line = %q, want http://127.0.0.1:<port> (stderr: %q)", addr, p.err.String())
 	}
-	if got := p.err.String(); got != "" {
-		t.Fatalf("stderr must stay empty, got %q", got)
-	}
 	if code, body := send(t, uiRequest(t, http.MethodGet, addr, "")); code != http.StatusOK || !strings.Contains(body, `id="app"`) {
 		t.Fatalf("GET %s = %d %q, want 200 and the page", addr, code, body)
+	}
+	// Both streams are read after the request, so a line or a log that serving it wrote shows too.
+	if got := p.out.String(); got != addr+"\n" {
+		t.Fatalf("stdout = %q, want the one line %q", got, addr+"\n")
+	}
+	if got := p.err.String(); got != "" {
+		t.Fatalf("stderr must stay empty, got %q", got)
 	}
 }
 
@@ -158,36 +161,51 @@ func TestUICreatesARuleTheCLISees(t *testing.T) {
 
 // TestUIRefusesAForeignHostAndOrigin — a page of another site reaches the loopback port under its
 // own name (DNS rebinding) or as a cross-origin form; the guard has to be wired in front of both
-// the API and the page, with the port the listener bound.
+// the API and the page, with the port the listener bound. The last request is the control: the
+// create that a foreign Origin was refused is accepted with the Origin of the page, so a guard
+// that refuses everything fails here.
 func TestUIRefusesAForeignHostAndOrigin(t *testing.T) {
 	_, addr := startUI(t, t.TempDir(), gitDir(t))
 
-	host := uiRequest(t, http.MethodGet, addr+"/api/rules", "")
-	host.Host = "evil.example"
-	if code, body := send(t, host); code != http.StatusForbidden {
-		t.Fatalf("a foreign Host got %d %q, want 403", code, body)
+	for _, target := range []string{addr + "/api/rules", addr} {
+		host := uiRequest(t, http.MethodGet, target, "")
+		host.Host = "evil.example"
+		if code, body := send(t, host); code != http.StatusForbidden {
+			t.Fatalf("GET %s with a foreign Host got %d %q, want 403", target, code, body)
+		}
 	}
 
-	// The request is the valid create of the test above, so the Origin is the only thing to refuse.
+	// The request is a valid create, as the control below shows, so the Origin is the only thing
+	// to refuse.
 	origin := uiRequest(t, http.MethodPost, addr+"/api/rules", uiRule)
 	origin.Header.Set("Origin", "http://evil.example")
 	if code, body := send(t, origin); code != http.StatusForbidden {
 		t.Fatalf("a foreign Origin got %d %q, want 403", code, body)
 	}
+
+	own := uiRequest(t, http.MethodPost, addr+"/api/rules", uiRule)
+	own.Header.Set("Origin", addr)
+	if code, body := send(t, own); code != http.StatusCreated {
+		t.Fatalf("the Origin of the page got %d %q, want 201", code, body)
+	}
 }
 
-// TestUIStopsOnSIGTERM — the stop is clean: exit 0, not the 1 of an error or the -1 of a process
-// the test had to kill. The signal goes out after the address line, which comes after the
-// handler is installed.
-func TestUIStopsOnSIGTERM(t *testing.T) {
-	p, _ := startUI(t, t.TempDir(), gitDir(t))
+// TestUIStopsOnSignals — the stop is clean on SIGINT, which is Ctrl-C, and on SIGTERM: exit 0,
+// not the 1 of an error or the -1 of a process the test had to kill or a signal ended. The signal
+// goes out after the address line, which comes after the handler is installed.
+func TestUIStopsOnSignals(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
+		t.Run(sig.String(), func(t *testing.T) {
+			p, _ := startUI(t, t.TempDir(), gitDir(t))
 
-	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("signaling: %v", err)
-	}
-	p.wait(t, 10*time.Second)
-	if code := p.cmd.ProcessState.ExitCode(); code != 0 {
-		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, p.err.String())
+			if err := p.cmd.Process.Signal(sig); err != nil {
+				t.Fatalf("signaling: %v", err)
+			}
+			p.wait(t, 10*time.Second)
+			if code := p.cmd.ProcessState.ExitCode(); code != 0 {
+				t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, p.err.String())
+			}
+		})
 	}
 }
 

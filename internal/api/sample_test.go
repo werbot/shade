@@ -75,6 +75,7 @@ func postTest(t *testing.T, f *fixture, text string, rule map[string]any) testWi
 // would cut the wrong piece, and the count of runes would miss by one per emoji.
 func TestCandidateOffsetsAreUTF16(t *testing.T) {
 	f := newFixture(t)
+	refuseEngine(t, f)
 	for _, tc := range []struct {
 		name, text string
 		spans      []spanWire
@@ -108,6 +109,7 @@ func TestCandidateOffsetsAreUTF16(t *testing.T) {
 // page sent.
 func TestCandidateReadsTheRawText(t *testing.T) {
 	f := newFixture(t)
+	refuseEngine(t, f)
 	const text = "<EMAIL_1> \x00 ACME-123456"
 	got := postTest(t, f, text, ticket)
 	if got.Text != text {
@@ -125,6 +127,7 @@ func TestCandidateReadsTheRawText(t *testing.T) {
 // would test a rule other than the one the user is about to save.
 func TestCandidateTakesTheWholeDefinition(t *testing.T) {
 	f := newFixture(t)
+	refuseEngine(t, f)
 	for _, tc := range []struct {
 		name, text string
 		rule       map[string]any
@@ -148,6 +151,7 @@ func TestCandidateTakesTheWholeDefinition(t *testing.T) {
 // nothing, and "nothing found" would read as an answer about a rule that cannot be saved.
 func TestCandidateErrorIsABadRequest(t *testing.T) {
 	f := newFixture(t)
+	refuseEngine(t, f)
 	_, broken := rules.TestSample(rules.Spec{Pattern: "("}, "x")
 	for _, tc := range []struct {
 		name string

@@ -22,7 +22,9 @@ func TestTestSampleFillsTheDefaults(t *testing.T) {
 }
 
 // What the caller set is not overwritten by the defaults. The "kind" row needs a pattern
-// that reads differently as a regex: the dot of a literal matches a dot and nothing else.
+// that reads differently as a regex: the dot of a literal matches a dot and nothing else. The
+// name is the one exception: a spec that carries an ID is still the ad-hoc rule, so the caller
+// cannot name it.
 func TestTestSampleKeepsWhatIsGiven(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -36,6 +38,8 @@ func TestTestSampleKeepsWhatIsGiven(t *testing.T) {
 			rules.Span{Start: 4, End: 7, Type: "SECRET", Rule: rules.AdHocName}},
 		{"secret group", rules.Spec{Pattern: `key=(\w+)`, SecretGroup: 1}, "key=abc",
 			rules.Span{Start: 4, End: 7, Type: "SECRET", Rule: rules.AdHocName}},
+		{"its own name is not kept", rules.Spec{ID: "x", Pattern: "ab+"}, "xabbby",
+			rules.Span{Start: 1, End: 5, Type: "SECRET", Rule: rules.AdHocName}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := rules.TestSample(tc.spec, tc.text)
@@ -57,6 +61,10 @@ func TestTestSampleReportsACompileError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "(") {
 		t.Fatalf("the error does not name the pattern: %v", err)
+	}
+	// The author of a broken pattern reads which rule it was, and the ad-hoc one has no other name.
+	if !strings.Contains(err.Error(), rules.AdHocName) {
+		t.Fatalf("the error does not name the rule: %v", err)
 	}
 }
 

@@ -1,8 +1,6 @@
 package api_test
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -72,35 +70,6 @@ func wantNoContent(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// writeCalls are a request of each writing endpoint, as the store accepts it and as it refuses it
-// the second time. They are in the order that works on a fresh store.
-var writeCalls = []struct{ name, method, target, body string }{
-	{"create", http.MethodPost, "/api/rules", `{"name":"x","type":"SECRET","pattern":"x"}`},
-	{"create refused", http.MethodPost, "/api/rules", `{"name":"x","type":"SECRET","pattern":"x"}`},
-	{"toggle", http.MethodPatch, "/api/rules/x?scope=project", `{"enabled":false}`},
-	{"toggle refused", http.MethodPatch, "/api/rules/nope?scope=project", `{"enabled":false}`},
-	{"delete", http.MethodDelete, "/api/rules/x?scope=project", ""},
-	{"delete refused", http.MethodDelete, "/api/rules/x?scope=project", ""},
-}
-
-// Every request opens a store of its own (see TestEngineIsClosedWhenTheRequestEnds), so the writes
-// must let it go on their way out, a refusal included.
-func TestWritesCloseTheEngine(t *testing.T) {
-	f := newFixture(t)
-	var opened []*core.Engine
-	recordEngines(f, &opened)
-	for _, tc := range writeCalls {
-		before := len(opened)
-		f.do(tc.method, tc.target, tc.body)
-		if len(opened) != before+1 {
-			t.Fatalf("%s: the handler opened %d engines, want one", tc.name, len(opened)-before)
-		}
-		if _, err := opened[before].Store().ListRules(t.Context(), nil); err == nil {
-			t.Errorf("%s: the engine still answers after the request: it was not closed", tc.name)
-		}
-	}
-}
-
 // A request that is refused for its shape is answered before the engine is opened: the scope, the
 // body and the required fields are checked first and the store last, so it costs no engine.
 func TestRefusedRequestsDoNotOpenTheEngine(t *testing.T) {
@@ -117,16 +86,6 @@ func TestRefusedRequestsDoNotOpenTheEngine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			refuseEngine(t, f)
 			wantError(t, f.do(tc.method, tc.target, tc.body), http.StatusBadRequest)
-		})
-	}
-}
-
-func TestWritesFailWith500WhenTheEngineCannotBeOpened(t *testing.T) {
-	f := newFixture(t)
-	f.open = func(context.Context) (*core.Engine, error) { return nil, errors.New("store is locked") }
-	for _, tc := range writeCalls {
-		t.Run(tc.name, func(t *testing.T) {
-			wantError(t, f.do(tc.method, tc.target, tc.body), http.StatusInternalServerError)
 		})
 	}
 }

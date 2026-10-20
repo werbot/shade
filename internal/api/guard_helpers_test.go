@@ -1,13 +1,11 @@
 package api_test
 
 import (
-	"encoding/json"
 	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/werbot/shade/internal/api"
@@ -65,24 +63,18 @@ func throughGuardOn(port int, r *http.Request) (*httptest.ResponseRecorder, *pro
 // body is the JSON error of the API, which is how the reply helpers are covered.
 func wantAnswer(t *testing.T, rec *httptest.ResponseRecorder, p *probe, status int) {
 	t.Helper()
+	if status != http.StatusOK {
+		if p.calls != 0 {
+			t.Error("a refused request reached the handler")
+		}
+		wantError(t, rec, status)
+		return
+	}
 	if rec.Code != status {
 		t.Errorf("status = %d, want %d", rec.Code, status)
 	}
-	if status == http.StatusOK {
-		if p.calls != 1 {
-			t.Errorf("the handler was reached %d times, want once", p.calls)
-		}
-		return
-	}
-	if p.calls != 0 {
-		t.Error("a refused request reached the handler")
-	}
-	if ct := rec.Result().Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Errorf("Content-Type = %q, want application/json", ct)
-	}
-	var body map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["error"] == "" {
-		t.Errorf("body = %q, want a JSON object with an error", rec.Body.String())
+	if p.calls != 1 {
+		t.Errorf("the handler was reached %d times, want once", p.calls)
 	}
 }
 

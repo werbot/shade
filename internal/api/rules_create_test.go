@@ -14,6 +14,9 @@ import (
 func TestCreateRule(t *testing.T) {
 	f := newFixture(t)
 	e := f.engine(t)
+	// The longest name there is: 64 characters, a capital first and then every kind of character the
+	// rest of a name may hold. The other names here are short and lower case.
+	longest := "Q" + strings.Repeat("Ab.9_-", 10) + "xyz"
 	for _, tc := range []struct {
 		name, body string
 		want       ruleWire
@@ -26,6 +29,8 @@ func TestCreateRule(t *testing.T) {
 			ruleWire{Name: "k.1_v-2", Type: "SECRET", Kind: "regex", Pattern: `key=(\w+)`, SecretGroup: 1, Enabled: true, Scope: "project"}},
 		{"literal kind", `{"name":"lit","type":"HOST","kind":"literal","pattern":"db.prod"}`,
 			ruleWire{Name: "lit", Type: "HOST", Kind: "literal", Pattern: "db.prod", Enabled: true, Scope: "project"}},
+		{"longest name", fmt.Sprintf(`{"name":%q,"type":"TICKET","pattern":"L-\\d+"}`, longest),
+			ruleWire{Name: longest, Type: "TICKET", Kind: "regex", Pattern: `L-\d+`, Enabled: true, Scope: "project"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := f.do(http.MethodPost, "/api/rules", tc.body)

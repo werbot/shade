@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -70,7 +69,9 @@ func (f *fixture) engine(t *testing.T) *core.Engine {
 	return e
 }
 
-// refuseEngine makes the fixture fail the test when the handler opens an engine.
+// refuseEngine makes the fixture fail the test when the handler opens an engine. It is for the
+// requests that have no use for the store: one refused for its shape, and a candidate rule, which
+// is the definition and the text and nothing else and is tried at every pause of the typing.
 func refuseEngine(t *testing.T, f *fixture) {
 	t.Helper()
 	f.open = func(context.Context) (*core.Engine, error) {
@@ -97,7 +98,7 @@ func recordEngines(f *fixture, opened *[]*core.Engine) {
 // of every one. hdr are header names and values in turn, set last so a test may replace a default.
 func (f *fixture) do(method, target, body string, hdr ...string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, target, strings.NewReader(body))
-	r.Host = "127.0.0.1:" + strconv.Itoa(testPort)
+	r.Host = hostByIP
 	if method == http.MethodPost || method == http.MethodPatch {
 		r.Header.Set("Content-Type", "application/json")
 	}
@@ -258,37 +259,54 @@ func TestPreflightIsRefused(t *testing.T) {
 	})
 }
 
+// calls is a request of each endpoint that needs the engine and, for each write, one the store
+// refuses (a taken name, a name that is not there, a rule that is gone). status is the answer when
+// the engine opens. They are in the order that works on a fresh store.
+var calls = []struct {
+	name, method, target, body string
+	status                     int
+}{
+	{"list", http.MethodGet, "/api/rules", "", http.StatusOK},
+	{"test the active rules", http.MethodPost, "/api/test", `{"text":"x"}`, http.StatusOK},
+	{"create", http.MethodPost, "/api/rules", `{"name":"x","type":"SECRET","pattern":"x"}`, http.StatusCreated},
+	{"create refused", http.MethodPost, "/api/rules", `{"name":"x","type":"SECRET","pattern":"x"}`, http.StatusConflict},
+	{"toggle", http.MethodPatch, "/api/rules/x?scope=project", `{"enabled":false}`, http.StatusNoContent},
+	{"toggle refused", http.MethodPatch, "/api/rules/nope?scope=project", `{"enabled":false}`, http.StatusNotFound},
+	{"delete", http.MethodDelete, "/api/rules/x?scope=project", "", http.StatusNoContent},
+	{"delete refused", http.MethodDelete, "/api/rules/x?scope=project", "", http.StatusNotFound},
+}
+
 func TestOpenFailureIs500(t *testing.T) {
 	f := newFixture(t)
 	f.open = func(context.Context) (*core.Engine, error) { return nil, errors.New("store is locked") }
-	rec := f.do(http.MethodGet, "/api/rules", "")
-	wantError(t, rec, http.StatusInternalServerError)
-	if msg := decodeJSON[map[string]string](t, rec)["error"]; !strings.Contains(msg, "store is locked") {
-		t.Errorf("error = %q, want the cause in it", msg)
+	for _, tc := range calls {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := f.do(tc.method, tc.target, tc.body)
+			wantError(t, rec, http.StatusInternalServerError)
+			if msg := decodeJSON[map[string]string](t, rec)["error"]; !strings.Contains(msg, "store is locked") {
+				t.Errorf("error = %q, want the cause in it", msg)
+			}
+		})
 	}
 }
 
-// Every request opens a store of its own, so one that is left open is a file handle lost per
-// request for as long as the UI runs. The test of the active rules is the request the page makes
-// most often, at every pause of the typing.
-func TestEngineIsClosedWhenTheRequestEnds(t *testing.T) {
-	for _, tc := range []struct{ name, method, target, body string }{
-		{"list rules", http.MethodGet, "/api/rules", ""},
-		{"test the active rules", http.MethodPost, "/api/test", `{"text":"x"}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t)
-			var opened []*core.Engine
-			recordEngines(f, &opened)
-			f.do(tc.method, tc.target, tc.body)
-			if len(opened) == 0 {
-				t.Fatal("the handler opened no engine")
-			}
-			for _, e := range opened {
-				if _, err := e.Store().ListRules(t.Context(), nil); err == nil {
-					t.Error("the engine still answers after the request: it was not closed")
-				}
-			}
-		})
+// A request that needs the rules opens a store of its own, so one that is left open is a file
+// handle lost per request for as long as the UI runs, a refusal included.
+func TestEveryRequestClosesItsEngine(t *testing.T) {
+	f := newFixture(t)
+	var opened []*core.Engine
+	recordEngines(f, &opened)
+	for _, tc := range calls {
+		before := len(opened)
+		// The status shows that each row went the way its name says, so a refusal is the store's.
+		if rec := f.do(tc.method, tc.target, tc.body); rec.Code != tc.status {
+			t.Fatalf("%s: status = %d, want %d: %s", tc.name, rec.Code, tc.status, rec.Body)
+		}
+		if len(opened) != before+1 {
+			t.Fatalf("%s: the handler opened %d engines, want one", tc.name, len(opened)-before)
+		}
+		if _, err := opened[before].Store().ListRules(t.Context(), nil); err == nil {
+			t.Errorf("%s: the engine still answers after the request: it was not closed", tc.name)
+		}
 	}
 }
