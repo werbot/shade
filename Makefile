@@ -1,4 +1,5 @@
 .PHONY: build test lint web web-deps
+.DEFAULT_GOAL := build
 
 web-deps:
 	cd web && bun install --frozen-lockfile
