@@ -22,6 +22,11 @@ const maxBody = 1 << 20
 func Guard(port int, next http.Handler) http.Handler {
 	suffix := ":" + strconv.Itoa(port)
 	hosts := []string{"127.0.0.1" + suffix, "localhost" + suffix}
+	if port == 80 {
+		// A browser leaves the default port out of Host and Origin, so on port 80 the names
+		// arrive bare. The Origin check is built from the Host and follows by itself.
+		hosts = append(hosts, "127.0.0.1", "localhost")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w, r)
 		// A page of another site reaches this port only under its own name (DNS rebinding), so
@@ -68,10 +73,12 @@ func isMutation(method string) bool {
 }
 
 // sameOrigin tells a request the page made itself from one made by another site. Origin must be
-// the page's own http://<Host>, which also turns away the "null" that a sandboxed frame sends;
-// Sec-Fetch-Site must be same-origin, or none for an address typed by the user. A header that is
-// absent passes, since not every client sends them, but a header that is present must match in
-// every value, an empty one included.
+// the page's own http://<Host>, which turns away every "null": the one a sandboxed frame sends,
+// and the one the page's own Referrer-Policy: no-referrer makes of the Origin of a request whose
+// mode is not "cors" (a native form post, a fetch with mode: "same-origin"). The page code must
+// therefore use the default fetch. Sec-Fetch-Site must be same-origin, or none for an address
+// typed by the user. A header that is absent passes, since not every client sends them, but a
+// header that is present must match in every value, an empty one included.
 func sameOrigin(r *http.Request) bool {
 	return absentOr(r.Header, "Origin", "http://"+r.Host) &&
 		absentOr(r.Header, "Sec-Fetch-Site", "same-origin", "none")
