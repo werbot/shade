@@ -5,6 +5,8 @@
   --fg: #1b1f24;
   --muted: #57606a;
   --border: #d0d7de;
+  /* A field's background is the page's, so its border alone shows it: 3:1 against --bg at least. */
+  --control-border: #8c959f;
   --accent: #0b57d0;
   --accent-fg: #ffffff;
   --danger: #b42318;
@@ -28,6 +30,7 @@
     --fg: #e6e9ed;
     --muted: #9aa4af;
     --border: #39414b;
+    --control-border: #6e7681;
     --accent: #8ab4f8;
     --accent-fg: #0f1216;
     --danger: #f28b82;
@@ -78,7 +81,7 @@ textarea {
   box-sizing: border-box;
   width: 100%;
   padding: 0.35rem 0.5rem;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   background: var(--bg);
 }

@@ -6,8 +6,9 @@
     candidate: Candidate | null; // the form's rule while it has a pattern
     refresh: number; // changes when the rules do
     onpatternerror: (message: string) => void;
+    onerror: (message: string) => void; // a failure of the test itself, "" from a run without one
   }
-  let { candidate, refresh, onpatternerror }: Props = $props();
+  let { candidate, refresh, onpatternerror, onerror }: Props = $props();
 
   let text = $state("");
   // The last answer with the mode it was asked in, so the status never pairs it with another mode.
@@ -24,24 +25,24 @@
   });
 
   // run tests the text and shows the answer. Every run that is not cancelled tells the form what it
-  // found of the pattern, "" included, so an error never outlives the pattern or the text it was about.
+  // found of the pattern and App what failed, "" included, so an error never outlives the pattern or
+  // the text it was about.
   async function run(body: string, rule: Candidate | null, asked: string, signal: AbortSignal) {
-    if (!body) {
-      answer = null;
-      onpatternerror("");
-      return;
-    }
+    let badPattern = false;
+    let message = "";
     try {
-      answer = { mode: asked, result: await testText(body, rule, signal), failure: "" };
-      onpatternerror("");
+      answer = body ? { mode: asked, result: await testText(body, rule, signal), failure: "" } : null;
     } catch (e) {
       if (signal.aborted) return; // a newer run took over
-      // A pattern is broken half of the time while it is typed: the form shows why.
-      const badPattern = rule !== null && e instanceof ApiError && e.status === 400;
-      const message = (e as Error).message;
-      answer = { mode: asked, result: null, failure: badPattern ? "see the error under the pattern" : message };
-      onpatternerror(badPattern ? message : "");
+      // A pattern is broken half of the time while it is typed: the form shows why. Any other failure
+      // is the test's own (no server, a text too large), and App's banner shows it.
+      badPattern = rule !== null && e instanceof ApiError && e.status === 400;
+      message = (e as Error).message;
+      const failure = badPattern ? "see the error under the pattern" : "no answer, see the error above";
+      answer = { mode: asked, result: null, failure };
     }
+    onpatternerror(badPattern ? message : "");
+    onerror(badPattern ? "" : message);
   }
 
   $effect(() => {

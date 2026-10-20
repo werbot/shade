@@ -24,6 +24,9 @@
 
   async function remove(rule: Rule) {
     confirming = null;
+    // The focused button went with the confirmation, so the heading of the list (in App) takes the
+    // focus, whatever the server answers. No scroll: the row may be far below the heading.
+    document.getElementById("rules-title")?.focus({ preventScroll: true });
     try {
       await deleteRule(rule);
       onchange();

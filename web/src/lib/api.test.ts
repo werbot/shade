@@ -39,7 +39,8 @@ describe("ruleKey", () => {
 
 describe("errors", () => {
   test("a refusal of the API carries its status and its error text", async () => {
-    answer(Response.json({ error: "bad pattern" }, { status: 400 }));
+    // The status text is what the Go server sends; the error text of the body must win over it.
+    answer(Response.json({ error: "bad pattern" }, { status: 400, statusText: "Bad Request" }));
     const err = await testText("x", candidate, signal).catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ status: 400, message: "bad pattern" });
@@ -102,5 +103,6 @@ describe("writes", () => {
     expect(url).toBe("/api/rules/a%2Fb%20c?scope=global");
     expect(init?.method).toBe("DELETE");
     expect(init?.body).toBeUndefined();
+    expect(new Headers(init?.headers).has("Content-Type")).toBe(false);
   });
 });

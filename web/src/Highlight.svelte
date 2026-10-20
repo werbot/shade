@@ -27,10 +27,12 @@
     overflow-wrap: anywhere;
   }
 
+  /* The bar under a match shows where it starts and ends without relying on its colour. */
   mark {
     border-radius: 3px;
     background: var(--mark);
     color: var(--mark-fg);
+    box-shadow: inset 0 -2px var(--mark-fg);
   }
 
   /* The name of the rule is the label of the match, so colour is not the only sign of it. As an
