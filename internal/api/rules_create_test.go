@@ -31,6 +31,8 @@ func TestCreateRule(t *testing.T) {
 			ruleWire{Name: "lit", Type: "HOST", Kind: "literal", Pattern: "db.prod", Enabled: true, Scope: "project"}},
 		{"longest name", fmt.Sprintf(`{"name":%q,"type":"TICKET","pattern":"L-\\d+"}`, longest),
 			ruleWire{Name: longest, Type: "TICKET", Kind: "regex", Pattern: `L-\d+`, Enabled: true, Scope: "project"}},
+		{"digit first", `{"name":"9lives","type":"SECRET","pattern":"x"}`,
+			ruleWire{Name: "9lives", Type: "SECRET", Kind: "regex", Pattern: "x", Enabled: true, Scope: "project"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := f.do(http.MethodPost, "/api/rules", tc.body)
@@ -70,6 +72,7 @@ func TestCreateRuleRejectsBadInput(t *testing.T) {
 		{"empty name", fmt.Sprintf(named, ""), "name"},
 		{"dot dot", fmt.Sprintf(named, ".."), "name"},
 		{"space", fmt.Sprintf(named, "a b"), "name"},
+		{"not ASCII", fmt.Sprintf(named, "имя"), "ASCII letters"},
 		{"leading dash", fmt.Sprintf(named, "-x"), "starting with a letter or a digit"},
 		{"65 characters", fmt.Sprintf(named, strings.Repeat("a", 65)), "1 to 64 characters"},
 		{"unknown scope", `{"name":"ok","type":"SECRET","pattern":"x","scope":"galaxy"}`, "scope"},
