@@ -309,7 +309,8 @@ the same machine reaches loopback too:
 - A `POST` or `PATCH` must be `application/json` (`415` otherwise), and a body over 1 MiB is a
   `413`.
 - No `Access-Control-*` header is ever sent, so another site cannot read an answer. Every answer
-  of the handler carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
+  of `shade ui`, a refusal and the page included, carries `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer` and
   `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`; answers of the API add
   `Cache-Control: no-store`.
 - Requests are not logged, bodies are kept nowhere and the journal is not written.
@@ -385,7 +386,9 @@ make build          # builds the page with bun, then CGO_ENABLED=0 go build -o s
 The binary is pure Go end to end — SQLite comes from `modernc.org/sqlite`, so
 `CGO_ENABLED=0` produces a static binary. bun only builds the page, which the binary embeds
 as files. Without bun a plain `go build ./cmd/shade` still works, but it leaves the page out:
-every command runs except `shade ui`, which exits `1` and asks for `make build`.
+every command runs except `shade ui`, which exits `1` and asks for `make build`. The same goes
+for `go install github.com/werbot/shade/cmd/shade@latest`: the repository tracks the sources of
+the page, not its build. Build from a checkout with `make build` to get the page.
 
 There are no releases or prebuilt packages yet; build from source.
 
@@ -436,8 +439,8 @@ offset	type	rule	fragment
 `--json` gives a machine-readable shape — `{"text": ..., "spans": [{"type": ..., "rule": ...}]}`
 for `anon`, `{"text": ..., "unresolved": [...]}` for `deanon`. `anon`, `deanon`,
 `test` and `rules import` read a file argument or stdin and accept `--project DIR`;
-`hook` reads its event from stdin, `mcp` speaks the protocol on stdio, and `init`
-takes neither.
+`hook` reads its event from stdin, `mcp` speaks the protocol on stdio, `serve` and `ui`
+take no input but `--project DIR` and `--port N`, and `init` takes neither.
 
 ## 🧭 Command reference
 
@@ -690,7 +693,7 @@ ahead of us; the code is already sliced for it.
 - [x] Encrypted store — projects, entities, audit journal, SQLite migrations
 - [x] Builtin rule set — 48 rules across `keys`, `credentials`, `pii`, `infra` (39 active by default)
 - [x] gitleaks rule import with a per-rule skip report
-- [x] CLI — `anon`, `deanon`, `hook`, `init`, `mcp`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
+- [x] CLI — `anon`, `deanon`, `hook`, `init`, `mcp`, `serve`, `ui`, `rules`, `entities`, `audit`, `test`, `doctor`, `version`
 - [x] Claude Code hooks — `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `MessageDisplay`, installed by `shade init`, which records `hook` as the adapter in the journal
 - [x] Skills — `shade` and `shade-rules`, installed into the plugin by `shade init`
 - [x] MCP adapter — `shade mcp` serves six tools and the `shade://directive` resource over stdio
