@@ -13,7 +13,6 @@
   --danger-fg: #ffffff;
   --mark: #fff1a8;
   --mark-fg: #1b1f24;
-  --focus: #0b57d0;
   --gap: 1rem;
   --gap-s: 0.5rem;
   --radius: 6px;
@@ -37,7 +36,6 @@
     --danger-fg: #0f1216;
     --mark: #5c4a00;
     --mark-fg: #fff4c2;
-    --focus: #8ab4f8;
   }
 }
 
@@ -100,7 +98,7 @@ button:disabled {
 }
 
 :focus-visible {
-  outline: 2px solid var(--focus);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
