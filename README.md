@@ -308,8 +308,8 @@ the same machine reaches loopback too:
   than `same-origin` or `none`.
 - A `POST` or `PATCH` must be `application/json` (`415` otherwise), and a body over 1 MiB is a
   `413` on the calls that read one: create, toggle and test.
-- No `Access-Control-*` header is ever sent, so another site cannot read an
-  answer. Every answer to a well-formed request, a refusal and the page included,
+- No `Access-Control-*` header is ever sent, so another site cannot read an answer.
+  Every answer to a well-formed request for a path, a refusal and the page included,
   carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
   `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`; answers of the API add
   `Cache-Control: no-store`.
