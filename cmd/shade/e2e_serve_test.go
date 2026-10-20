@@ -82,7 +82,7 @@ func newProxyFixture(t *testing.T, answer func(string) string) *proxyFixture {
 	if err := os.WriteFile(filepath.Join(f.home, "config.toml"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p := startServe(t, buildShade(t), f.home, f.dir)
+	p := startMode(t, buildShade(t), "serve", f.home, f.dir)
 	line := waitForLine(t, p.out, 10*time.Second)
 	const prefix = "export ANTHROPIC_BASE_URL="
 	if !strings.HasPrefix(line, prefix) {
