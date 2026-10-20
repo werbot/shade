@@ -68,8 +68,8 @@ func (s *Store) RulesForProject(ctx context.Context, projectID int64) ([]rules.R
 }
 
 // ListRules returns rule rows for the CLI, the MCP rules_list tool, the UI and SeedBuiltin.
-// projectID == nil means all rules the store, otherwise the global ones plus the rules of the
-// given project.
+// projectID == nil means all the rules of the store, otherwise the global ones plus the rules of
+// the given project.
 func (s *Store) ListRules(ctx context.Context, projectID *int64) ([]RuleRow, error) {
 	q := `SELECT name, type, kind, pattern, secret_group, enabled, builtin, project_id FROM rules`
 	var args []any
