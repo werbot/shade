@@ -8,11 +8,22 @@ import "errors"
 // a real rejection (see SeedBuiltin).
 var ErrBuiltinRule = errors.New("builtin rule")
 
-// builtinRuleError carries ready-made user-facing rejection text and is recognised
-// errors.Is(err, ErrBuiltinRule). Wrapping through %w is not possible: the sentinel would add
-// its own text to the message the user reads.
-type builtinRuleError struct{ msg string }
+// The other rule rejections are sentinels too: the API picks the status of its answer by
+// errors.Is, and not by the text.
+var (
+	ErrRuleNotFound = errors.New("rule not found")
+	ErrRuleExists   = errors.New("rule exists")
+	ErrInvalidRule  = errors.New("invalid rule")
+)
 
-func (e builtinRuleError) Error() string { return e.msg }
+// ruleError carries ready-made user-facing rejection text and is recognised by
+// errors.Is(err, kind), where kind is one of the sentinels above. Wrapping through %w is not
+// possible: the sentinel would add its own text to the message the user reads.
+type ruleError struct {
+	msg  string
+	kind error
+}
 
-func (e builtinRuleError) Is(target error) bool { return target == ErrBuiltinRule }
+func (e ruleError) Error() string { return e.msg }
+
+func (e ruleError) Is(target error) bool { return target == e.kind }
